@@ -284,7 +284,7 @@ function MessageView({ message: originalMessage, retry, onOpenQuestions, onFeasi
   const [copied, setCopied] = useState(false)
   const [copyError, setCopyError] = useState('')
   return (
-    <article aria-label={`${message.role === 'user' ? 'You' : 'WireUp'} message`} className={message.role === 'user' ? 'ml-auto max-w-[88%] rounded-xl border border-neutral-800 bg-neutral-800/40 px-3.5 py-2.5' : 'min-w-0'}>
+    <article aria-label={`${message.role === 'user' ? 'You' : 'WireUp'} message`} className={message.role === 'user' ? 'ml-auto max-w-[88%] rounded-xl border border-neutral-800 bg-neutral-800/40 px-3.5 py-2.5' : 'wireup-assistant-message min-w-0'}>
       <div className="mb-1.5 flex items-center gap-2 text-[11px] font-medium text-neutral-500">{message.role === 'assistant' && <img src="/wireup-logo.png" alt="" className="size-4 rounded object-contain" />}{message.role === 'user' ? 'You' : 'WireUp'}</div>
       {message.feasibility && <FeasibilityCard report={message.feasibility} onChoose={onFeasibility} busy={busy} selected={message.feasibilityChoice} />}
       {message.questions && <button type="button" onClick={onOpenQuestions} disabled={busy} className="my-3 rounded-lg border border-neutral-700 px-4 py-2 text-xs text-neutral-200">Open project setup · {message.questions.questions.length} questions</button>}

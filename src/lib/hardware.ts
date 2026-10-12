@@ -24,7 +24,7 @@ export type CatalogComponent = {
   pins?: (string | HardwarePin)[]; connectable?: boolean; simulation_supported?: boolean; simulation_boards?: string[]; simulation_scope?: string; spice_model?: string
   properties?: unknown; defaultValues?: Record<string, unknown>; supported_board?: boolean; schematic_only?: boolean; compile?: boolean; compile_timeout_seconds?: number; simulation?: string; unavailable_reason?: string
 }
-export type HardwareCommand =
+export type HardwareCommand = 'route_breadboard'
   | 'read_project' | 'search_components' | 'add_component' | 'remove_component' | 'modify_component'
   | 'connect_wire' | 'remove_wire' | 'generate_firmware' | 'read_firmware' | 'edit_firmware'
   | 'compile_firmware' | 'run_simulation' | 'stop_simulation' | 'read_simulation_results'

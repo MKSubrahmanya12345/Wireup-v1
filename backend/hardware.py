@@ -988,8 +988,11 @@ class HardwareService:
             fail(400, 'Command args must contain finite JSON values.')
         if len(encoded) > 200000:
             fail(400, 'Command arguments are too large.')
-        if name not in TOOLS and name not in ('undo', 'wire_circuit', 'validate_circuit'):
+        if name not in TOOLS and name not in ('undo', 'wire_circuit', 'validate_circuit', 'route_breadboard'):
             fail(400, 'Unknown hardware command.')
+        if name == 'route_breadboard':
+            from backend.breadboard_routing import route_breadboard
+            return await route_breadboard(self, project_id, args)
         project = self.get_project(project_id)
         if name == 'wire_circuit':
             from backend.circuit_wiring import wire_circuit
@@ -1209,6 +1212,8 @@ def create_router(hardware_service):
         finally:
             hardware_service.runtime.detach(project_id, websocket)
 
+    from backend.build_guide import create_router as create_build_guide_router
+    api.include_router(create_build_guide_router(hardware_service))
     from backend.board_flash import create_router as create_flash_router
     api.include_router(create_flash_router(hardware_service, prefix=''))
     from backend.native_esp32 import create_router as create_native_router

@@ -15,7 +15,7 @@ export function BoardFlashDialog({ project, dirty, running, onClose }: { project
   const [success, setSuccess] = useState(false)
   const controller = useRef<AbortController | null>(null)
   const artifact = project.compiler?.artifact
-  const current = !!artifact && artifact.board === project.board && artifact.source_revision === project.firmware.revision && !dirty
+  const current = !!artifact && ['simulation_ready','compilation_complete'].includes(project.compiler?.status ?? '') && artifact.board === project.board && artifact.source_revision === project.firmware.revision && artifact.project_revision === project.revision && !dirty
   async function refresh() {
     controller.current?.abort()
     const abort = new AbortController(); controller.current = abort

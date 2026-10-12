@@ -8,7 +8,7 @@ for(const width of [1440,390])test(`wire details show actual pins at ${width}px`
  await expect(wire).toBeVisible({timeout:30000});await wire.focus();await wire.press('Enter')
  const card=page.getByRole('dialog',{name:'Wire connection details'})
  await expect(card).toContainText('board');await expect(card).toContainText('Pin 13');await expect(card).toContainText('led');await expect(card).toContainText('Pin A')
- await expect(page.locator('.hw-wires text')).toContainText(['board · 13','led · A'])
+ await expect(page.locator('.hw-wires text')).toHaveCount(0)
  await card.getByRole('button',{name:'Show board pin 13'}).click()
  await expect(page.getByRole('toolbar',{name:'Actions for board'})).toBeVisible()
  await card.getByRole('button',{name:'Close wire details'}).click();await expect(card).toHaveCount(0)

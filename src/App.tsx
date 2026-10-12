@@ -10,6 +10,7 @@ import { AllProjects } from '@/components/all-projects'
 import { ExamplesGallery } from '@/components/examples-gallery'
 import { PlatformHome } from '@/components/platform-home'
 import { WorkspaceLoading } from '@/components/ui/workspace-loading'
+import './ui-theme.css'
 
 const Preview = lazy(() => import('@/components/demo'))
 const SchematicStudio = lazy(() => import('@/components/schematic-studio').then(module => ({ default: module.SchematicStudio })))

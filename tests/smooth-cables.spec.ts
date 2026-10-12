@@ -34,6 +34,7 @@ test('simulated network settings validate and remain scoped to current project',
  await expect(dialog).toContainText('apply when simulation next starts')
  await expect(dialog).toContainText('Internet access and external networking are not connected')
  await dialog.getByRole('button',{name:'Close simulated Wi-Fi'}).click()
+ await page.getByRole('button',{name:'Select board',exact:true}).click()
  await page.getByRole('button',{name:'Simulated Wi-Fi settings',exact:true}).click()
  await expect(dialog.getByLabel('Simulated network SSID')).toHaveValue('WireUpTest')
 })

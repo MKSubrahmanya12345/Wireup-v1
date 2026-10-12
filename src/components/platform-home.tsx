@@ -24,7 +24,7 @@ export function PlatformHome() {
       navigate(`/project/${project.id}`, { state: { initialPrompt: description } })
     } catch (error) { setError(error instanceof Error ? error.message : 'Could not create your workspace.'); setBusy(false) }
   }
-  return <div className="dark relative isolate min-h-svh bg-[#0a0a0a] text-neutral-100">
+  return <div className="nova-home dark relative isolate min-h-svh bg-[#0a0a0a] text-neutral-100">
     <div aria-hidden="true" className="pointer-events-none fixed inset-0 -z-10"><GradientOrb /></div>
     <header className="flex h-20 items-center justify-between border-b border-neutral-800/60 bg-neutral-950/60 px-5 backdrop-blur sm:px-10"><Link to="/" className="flex items-center gap-3 text-xl font-semibold"><img src="/wireup-logo.png" alt="" className="size-9 rounded-lg" />WireUp</Link><button onClick={() => void create('')} disabled={busy} className="flex items-center gap-2 rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-xs hover:border-neutral-500 disabled:opacity-50"><Plus size={15} />New prototype</button></header>
     <main className="mx-auto max-w-5xl px-5 pb-12 pt-20 sm:pt-28">

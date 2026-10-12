@@ -5,13 +5,23 @@ import '../../vendor/velxio/frontend/src/elements-register'
 import type { HardwareComponent, HardwarePin } from '../lib/hardware'
 import type { HardwareRuntime } from './runtime'
 
-export function HardwarePart({ part, runtime, pinsChanged }: {
+export function HardwarePart({ part, runtime, pinsChanged, sizeChanged }: {
   part: HardwareComponent; runtime: HardwareRuntime | null; pinsChanged: (id: string, pins: HardwarePin[]) => void
+  sizeChanged?: (id: string, size: { width: number; height: number }) => void
 }) {
   const host = useRef<HTMLDivElement>(null)
   const element = useRef<HTMLElement | null>(null)
   const [unavailable, setUnavailable] = useState(false)
   const properties = useRef(part.properties)
+  useEffect(() => {
+    const container = host.current
+    if (!container || !sizeChanged) return
+    const measure = () => sizeChanged(part.id, { width: container.offsetWidth, height: container.offsetHeight })
+    const observer = new ResizeObserver(measure)
+    observer.observe(container)
+    measure()
+    return () => observer.disconnect()
+  }, [part.id, sizeChanged])
   useEffect(() => { properties.current = part.properties }, [part.properties])
   useEffect(() => {
     let active = true

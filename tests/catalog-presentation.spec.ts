@@ -1,0 +1,17 @@
+import {expect,test} from '@playwright/test'
+for(const width of [1440,390])test(`compact catalog preserves descriptions on hover and insertion at ${width}px`,async({page,request})=>{
+ const project=await(await request.post('/api/hardware/projects',{data:{name:'Catalog presentation',board:'arduino-uno'}})).json()
+ await page.setViewportSize({width,height:900});await page.goto(`/project/${project.id}`)
+ if(width<900)await page.getByRole('button',{name:'Parts',exact:true}).click()
+ await page.getByRole('textbox',{name:'Search components',exact:true}).fill('BMP280')
+ const card=page.locator('.hw-catalog-card');await expect(card).toHaveCount(1,{timeout:10000})
+ await expect(card.locator('strong')).toHaveText('BMP280')
+ await expect(card.locator('small')).toHaveCount(0)
+ await expect(card).toHaveAttribute('title',/BMP280 \(Pressure \+ Temp\)/)
+ await expect(card).toHaveAttribute('title',/I2C/)
+ await card.hover();await card.focus();await expect(card).toBeFocused()
+ await card.click()
+ await expect.poll(async()=>{const stored=await(await request.get(`/api/hardware/projects/${project.id}`)).json();return stored.components.some((part:{type:string})=>part.type==='bmp280')}).toBe(true)
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true)
+ await page.screenshot({path:`test-results/compact-catalog-${width}.png`})
+})
