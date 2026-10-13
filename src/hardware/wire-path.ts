@@ -38,7 +38,7 @@ function simplify(points: WirePoint[]): WirePoint[] {
     const last = result[result.length - 1]
     if (last?.x === point.x && last.y === point.y) continue
     const before = result[result.length - 2]
-    if (before && ((before.x === last.x && last.x === point.x) || (before.y === last.y && last.y === point.y))) result.pop()
+    if (before && ((before.x === last.x && last.x === point.x && (last.y - before.y) * (point.y - last.y) >= 0) || (before.y === last.y && last.y === point.y && (last.x - before.x) * (point.x - last.x) >= 0))) result.pop()
     result.push(point)
   }
   return result
@@ -55,8 +55,12 @@ function exitPoint(port: WirePort, bounds: WireBounds[], fanout: number): WirePo
 
 function routeBetween(start: WirePoint, end: WirePoint, bounds: WireBounds[], occupied: Segment[]): WirePoint[] {
   const boxes = bounds.map(box => ({ left: box.left - clearance, right: box.right + clearance, top: box.top - clearance, bottom: box.bottom + clearance }))
-  const xs = new Set([start.x, end.x, 8, 992])
-  const ys = new Set([start.y, end.y, 8, 642])
+  const left = Math.min(8, start.x, end.x, ...boxes.map(box => box.left - spacing))
+  const right = Math.max(992, start.x, end.x, ...boxes.map(box => box.right + spacing))
+  const top = Math.min(8, start.y, end.y, ...boxes.map(box => box.top - spacing))
+  const bottom = Math.max(642, start.y, end.y, ...boxes.map(box => box.bottom + spacing))
+  const xs = new Set([start.x, end.x, left, right])
+  const ys = new Set([start.y, end.y, top, bottom])
   for (const box of boxes) {
     xs.add(box.left); xs.add(box.right)
     ys.add(box.top); ys.add(box.bottom)
@@ -65,8 +69,8 @@ function routeBetween(start: WirePoint, end: WirePoint, bounds: WireBounds[], oc
     if (segment.start.x === segment.end.x) { xs.add(segment.start.x - spacing); xs.add(segment.start.x + spacing) }
     else { ys.add(segment.start.y - spacing); ys.add(segment.start.y + spacing) }
   }
-  const xValues = [...xs].filter(x => x >= Math.min(8, start.x, end.x) && x <= Math.max(992, start.x, end.x)).sort((a, b) => a - b)
-  const yValues = [...ys].filter(y => y >= Math.min(8, start.y, end.y) && y <= Math.max(642, start.y, end.y)).sort((a, b) => a - b)
+  const xValues = [...xs].filter(x => x >= left && x <= right).sort((a, b) => a - b)
+  const yValues = [...ys].filter(y => y >= top && y <= bottom).sort((a, b) => a - b)
   const columns = xValues.length
   const pointAt = (node: number): WirePoint => ({ x: xValues[node % columns], y: yValues[Math.floor(node / columns)] })
   const startNode = yValues.indexOf(start.y) * columns + xValues.indexOf(start.x)

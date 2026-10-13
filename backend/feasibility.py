@@ -25,7 +25,7 @@ def assess(service, project_id, plan):
         _fail('Invalid feasibility plan.', 400)
     operations = plan.get('operations', ['add_component'])
     plan = {**plan, 'operations': operations}
-    executable = {'add_component','remove_component','modify_component','connect_wire','remove_wire','wire_circuit','generate_firmware','edit_firmware','compile_firmware','run_simulation','stop_simulation','read_simulation_results','read_compiler_errors','validate_circuit','read_project','read_firmware','search_components'}
+    executable = {'add_component','remove_component','modify_component','connect_wire','remove_wire','wire_circuit','generate_firmware','edit_firmware','compile_firmware','run_simulation','stop_simulation','read_simulation_results','read_compiler_errors','validate_circuit','check_connections','read_project','read_firmware','search_components'}
     if not isinstance(operations, list) or not operations or any(not isinstance(operation,str) or operation not in executable for operation in operations):
         _fail('Plan operations must use supported executable tool names, not prose descriptions.', 400)
     parts = plan.get('parts', [])

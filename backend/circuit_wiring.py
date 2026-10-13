@@ -11,6 +11,11 @@ the stored project unchanged; a changed batch creates exactly one undo entry.
 validate_circuit(service, project_id) returns {project_id, revision, valid,
 nets, errors, warnings, scope} without writing. Findings include endpoint and
 wire evidence. This is not simulation, ERC, or a general electrical safety check.
+check_connections(service, project_id, args) returns {project, validation, before,
+recheck, changed, repairs, proposed_repairs, status}. It is read-only by default.
+With repair: true and expected_revision, recognized pin aliases and electrically
+redundant self/duplicate wires are repaired only when the full recheck has no
+errors. Duplicate metadata must match exactly. Other errors block every repair.
 Runtime behavior matches ordinary HardwareService mutations: a connected browser
 is not proof of a running simulation and does not itself block editing.
 """
@@ -210,6 +215,151 @@ async def validate_circuit(hwservice, project_id):
     """Return diagnostics for one locked, current project snapshot; never write."""
     with hwservice.lock:
         return _validate(hwservice, hwservice._load(project_id))
+
+
+def _connection_report(hwservice, project):
+    component_errors, ids = [], set()
+    for index, part in enumerate(project['components']):
+        try:
+            if not isinstance(part, dict):
+                fail(400, 'Component must be an object.')
+            component_id = identifier(part.get('id'))
+            kind = part.get('type')
+            if not isinstance(kind, str) or kind not in hwservice.catalog.components:
+                fail(400, 'Unknown component type.')
+            if component_id in ids:
+                fail(400, 'Component identifier is repeated.')
+            ids.add(component_id)
+        except HTTPException as error:
+            component_errors.append({'code': 'invalid_component', 'message': str(error.detail),
+                                     'evidence': {'component_index': index}})
+    if component_errors:
+        return {'project_id': project['id'], 'revision': project['revision'], 'valid': False,
+                'nets': [], 'errors': component_errors, 'warnings': [],
+                'scope': SCOPE + ' Net analysis and repair are skipped when component identities are invalid.'}
+    report = _validate(hwservice, project)
+    for index, wire in enumerate(project['wires']):
+        if not isinstance(wire, dict):
+            continue
+        try:
+            start = hwservice._endpoint(project, wire.get('from'))
+            end = hwservice._endpoint(project, wire.get('to'))
+        except HTTPException:
+            continue
+        if start != wire['from'] or end != wire['to']:
+            report['errors'].append({
+                'code': 'noncanonical_endpoint',
+                'message': 'Wire uses a recognized pin alias instead of the canonical pin.',
+                'evidence': {'wire_id': wire.get('id'), 'wire_index': index,
+                             'endpoints': [start, end]},
+            })
+    connected = {_key(endpoint) for net in report['nets'] if net['wire_ids']
+                 for endpoint in net['endpoints']}
+    required = {'servo': ('GND', 'V+', 'PWM'),
+                'potentiometer': ('GND', 'VCC', 'SIG')}
+    for part in project['components']:
+        for pin in required.get(part['type'], ()):
+            if (part['id'], pin) not in connected:
+                report['warnings'].append({
+                    'code': 'unconnected_required_pin',
+                    'message': f'{part["id"]} has no wire path at {pin}. Review whether this part is intentionally unused.',
+                    'evidence': {'component_id': part['id'],
+                                 'endpoints': [{'component': part['id'], 'pin': pin}]},
+                })
+    breadboards = [part['id'] for part in project['components'] if part['type'].startswith('breadboard')]
+    if breadboards:
+        report['warnings'].append({
+            'code': 'breadboard_connectivity_unverified',
+            'message': 'Breadboard internal strips and rails are not analyzed by this check. Inspect the breadboard connections separately; valid endpoint names do not prove a complete path.',
+            'evidence': {'component_ids': breadboards},
+        })
+    if any(part['type'] == 'servo' for part in project['components']):
+        report['warnings'].append({
+            'code': 'servo_power_unverified',
+            'message': 'Servo supply capacity, actual voltage, common-ground assembly, and mechanical clearance need manual verification. Saved wires alone do not establish them.',
+            'evidence': {'component_ids': [part['id'] for part in project['components']
+                                          if part['type'] in ('servo', 'power-supply')]},
+        })
+    report['valid'] = not report['errors']
+    report['scope'] += (' Checks missing wire paths at servo and potentiometer pins, without inferring intended use. '
+                        'Connection checking also flags recognized pin aliases. '
+                        'Repair only canonicalizes aliases and removes self wires or duplicate '
+                        'connections with matching metadata; it never infers intended wiring.')
+    return report
+
+
+async def check_connections(hwservice, project_id, args=None):
+    """Inspect connections; explicitly requested repairs must pass a full recheck."""
+    args = {} if args is None else args
+    if not isinstance(args, dict) or set(args) - {'repair', 'expected_revision'}:
+        fail(400, 'Connection checking accepts only repair and expected_revision.')
+    repair = args.get('repair', False)
+    if type(repair) is not bool:
+        fail(400, 'Connection repair must be boolean.')
+    revision = args.get('expected_revision')
+    if revision is not None and (type(revision) is not int or revision < 0):
+        fail(400, 'Expected revision must be a nonnegative integer.')
+    if repair and revision is None:
+        fail(400, 'Connection repair requires expected_revision.')
+    with hwservice.lock:
+        project = hwservice._load(project_id)
+        hwservice._check_revision(project, args)
+        before = _connection_report(hwservice, project)
+        candidate = copy.deepcopy(project)
+        actions = []
+        if not any(item['code'] == 'invalid_component' for item in before['errors']):
+            retained, connections = [], {}
+            for index, wire in enumerate(candidate['wires']):
+                if not isinstance(wire, dict):
+                    retained.append(wire)
+                    continue
+                try:
+                    identifier(wire.get('id'))
+                    start = hwservice._endpoint(candidate, wire.get('from'))
+                    end = hwservice._endpoint(candidate, wire.get('to'))
+                except HTTPException:
+                    retained.append(wire)
+                    continue
+                evidence = {'wire_id': wire['id'], 'wire_index': index}
+                if start == end:
+                    actions.append({'operation': 'remove_self_wire', **evidence})
+                    continue
+                connection = _connection(start, end)
+                metadata = {key: value for key, value in wire.items()
+                            if key not in ('id', 'from', 'to')}
+                previous = connections.get(connection)
+                if previous is not None and previous['metadata'] == metadata:
+                    actions.append({'operation': 'remove_duplicate_wire', **evidence,
+                                    'retained_wire_id': previous['id']})
+                    continue
+                connections.setdefault(connection, {'id': wire['id'], 'metadata': metadata})
+                if start != wire['from'] or end != wire['to']:
+                    actions.append({'operation': 'canonicalize_endpoints', **evidence,
+                                    'from': start, 'to': end})
+                    wire['from'], wire['to'] = start, end
+                retained.append(wire)
+            candidate['wires'] = retained
+        after = _connection_report(hwservice, candidate) if repair else before
+        changed = repair and bool(actions) and after['valid']
+        if changed:
+            snapshot = {key: copy.deepcopy(project[key])
+                        for key in ('name', 'board', 'components', 'wires', 'firmware')}
+            candidate['_undo'] = (candidate['_undo'] + [snapshot])[-50:]
+            candidate['revision'] += 1
+            if candidate['compiler']:
+                candidate['compiler']['stale'] = True
+            candidate['updated_at'] = now()
+            candidate['history'] = (candidate['history'] + [
+                {'revision': candidate['revision'], 'operation': 'check_connections',
+                 'timestamp': candidate['updated_at']}])[-200:]
+            hwservice._save(candidate)
+            after['revision'] = candidate['revision']
+        return {'project': public(candidate if changed else project),
+                'validation': after if changed else before, 'before': before,
+                'recheck': after if repair else None, 'changed': changed,
+                'repairs': actions if changed else [],
+                'proposed_repairs': actions,
+                'status': 'repaired' if changed else 'needs_review' if not before['valid'] else 'checked'}
 
 
 async def wire_circuit(hwservice, project_id, args):

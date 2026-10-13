@@ -139,7 +139,8 @@ def test_validation_and_paths(client, service):
     with pytest.raises(HTTPException) as error:
         service.get_project('../outside')
     assert error.value.status_code == 400
-    assert len(TOOLS) == 16
+    assert len(TOOLS) == 17
+    assert 'check_connections' in TOOLS
 
 
 @pytest.mark.parametrize('expression,result', [('2 + 3 * 4', 14), ('(5 - 1) ** 2', 16), ('-10 / 4', -2.5), ('7 % 4', 3)])

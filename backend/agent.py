@@ -67,7 +67,10 @@ for a second confirmation. Incompatible or blocked plans authorize no changes.
 Never invent approval or bypass the server's feasibility checks.
 After approval, add only approved parts and perform only approved operations.
 Use wire_circuit for validated atomic batches of exact
-connections, then validate_circuit and fix proven errors before writing firmware.
+connections, then check_connections and fix proven errors before writing firmware.
+Use check_connections again after corrections. Its repair=true mode only performs
+safe redundant-wire cleanup and known pin alias normalization with a full recheck;
+never infer missing wiring or treat a passing check as proof of intended behavior.
 Explain validation warnings and its limited scope; do not claim broad electrical
 certification. Write working firmware, and compile if requested
 or needed for the build. Use IDs from successful tool results, not imagined IDs.
@@ -124,7 +127,7 @@ class _PlanPart(_Args):
 _Operation = Literal[
     'read_project', 'search_components', 'add_component', 'remove_component',
     'modify_component', 'connect_wire', 'remove_wire', 'wire_circuit',
-    'validate_circuit', 'generate_firmware', 'read_firmware', 'edit_firmware',
+    'validate_circuit', 'check_connections', 'generate_firmware', 'read_firmware', 'edit_firmware',
     'compile_firmware', 'run_simulation', 'stop_simulation',
     'read_simulation_results', 'read_compiler_errors', 'calculator',
 ]
@@ -181,6 +184,7 @@ _TOOL_FIELDS = {
     'remove_wire': {**_id, **_revision},
     'wire_circuit': {'batch': (list[_BatchWire], Field(min_length=1, max_length=200)), **_revision},
     'validate_circuit': {},
+    'check_connections': {'repair': (bool, Field(default=False)), **_revision},
     'generate_firmware': {'source': _source, **_revision},
     'read_firmware': {},
     'edit_firmware': {'source': _optional(str, min_length=1, max_length=200000), 'old': _optional(str, min_length=1, max_length=200000), 'new': _optional(str, max_length=200000), **_revision},
@@ -214,6 +218,7 @@ _DESCRIPTIONS = {
     'remove_wire': 'Remove a wire from the current project.',
     'wire_circuit': 'Add a whole batch of exact pin connections atomically, with revision check and known rail-short validation. One invalid connection rejects all changes. Returns project, added wires, warnings and validation scope.',
     'validate_circuit': 'Inspect actual current wires and known rail/LED topology; return evidence and limited-validation warnings. Does not certify general electrical safety.',
+    'check_connections': 'Check current structural connections and existing rail/LED diagnostics. Read-only by default. With repair=true and expected_revision, canonicalize recognized aliases and remove redundant self/duplicate wires only if a full recheck passes. Never guesses missing connections or fixes electrical intent; returns remaining findings and scope.',
     'generate_firmware': 'Write complete model-generated Arduino source to the current project.',
     'read_firmware': 'Read the current project firmware source and revision.',
     'edit_firmware': 'Replace firmware with source, or make one exact old/new replacement.',
@@ -530,9 +535,10 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
             raise ValueError('Call ask_project_questions first and wait for user-confirmed requirements. No hardware operation is allowed in this clarification turn.')
         if name != 'calculator' and not project_id:
             raise ValueError('Select or create a current hardware project before using this tool.')
-        if name in _READ_FIRST and not project_read:
+        repairing_connections = name == 'check_connections' and args.get('repair', False)
+        if (name in _READ_FIRST or repairing_connections) and not project_read:
             raise ValueError('Call read_project successfully before mutating or compiling the current project.')
-        if name in _CONFIRM_FIRST and not confirmed:
+        if (name in _CONFIRM_FIRST or repairing_connections) and not confirmed:
             raise ValueError('User-confirmed requirements are required before project mutations, compilation, or simulation start. Call ask_project_questions and wait for answers.')
         if confirmed and project_id and not approval_id and name not in _ASSESSMENT_TOOLS and name != 'stop_simulation':
             raise ValueError('Assess the complete project plan and obtain approval before any placement, mutation, compilation, or runtime operation.')
@@ -562,13 +568,13 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
                 approved_plan = None
                 raise ValueError('The proposed design contains incompatible devices. Select only the compatible choices from the setup answers; no changes were authorized. Details: ' + json.dumps(assessment.get('issues', [])))
             return assessment
-        if name in _CONFIRM_FIRST:
+        if name in _CONFIRM_FIRST or repairing_connections:
             if not approval_id:
                 raise ValueError('Complete the feasibility review before changing the project.')
             _get_feasibility().check_operation(_get_service(), project_id, approval_id, name, args)
             if name not in approved_plan['operations']:
                 raise ValueError('This operation is outside the reviewed plan. Reassess before proceeding.')
-        if approval_id and name in ('add_component', 'compile_firmware', 'run_simulation', 'validate_circuit'):
+        if approval_id and name in ('add_component', 'compile_firmware', 'run_simulation', 'validate_circuit', 'check_connections'):
             from backend.hardware import BOARD_ALIASES
             def canonical(kind):
                 kind = kind.removeprefix('wokwi-')
@@ -605,7 +611,7 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
             authorized_board = approved_plan['board'] if board_answer == 'ai_choose' and approved_plan else board_answer
             if board_key in _board_catalog() and (not confirmed or authorized_board != board_key):
                 raise ValueError('Adding or replacing a board requires its canonical key in the confirmed board answer.')
-        if name in _READ_FIRST and project_revision is not None:
+        if (name in _READ_FIRST or repairing_connections) and project_revision is not None:
             args = {**args, 'expected_revision': args.get('expected_revision', project_revision)}
         attempted_tools[name] = attempted_tools.get(name, 0) + 1
         previous_revision = project_revision
@@ -622,7 +628,7 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
                     compile_attempts -= 1
                 raise
         result = _public(result)
-        if name == 'wire_circuit' and isinstance(result, dict) and 'project' in result:
+        if name in ('wire_circuit', 'check_connections') and isinstance(result, dict) and 'project' in result:
             project_revision = result['project']['revision']
             result = {**result, 'project': {key: value for key, value in result['project'].items() if key in ('id', 'revision', 'board', 'components', 'wires')}}
         if name == 'search_components' and isinstance(result, dict):
@@ -644,7 +650,8 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
                 board_unselected = False
             if isinstance(result, dict) and isinstance(result.get('revision'), int) and (name == 'read_project' or name in _MUTATIONS):
                 project_revision = result['revision']
-            if name in _MUTATIONS:
+            connections_changed = name == 'check_connections' and result.get('changed') is True
+            if name in _MUTATIONS or connections_changed:
                 _get_feasibility().advance(_get_service(), project_id, approval_id, previous_revision, project_revision)
                 readback_revision = None
                 validation_revision = None
@@ -656,6 +663,12 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
                     validation_revision = project_revision
             elif name == 'compile_firmware':
                 current_compile = result
+            if name == 'check_connections':
+                checked = result.get('validation', {})
+                if checked.get('valid') is True and not checked.get('errors') and checked.get('revision') == project_revision:
+                    validation_revision = project_revision
+                if connections_changed:
+                    changes['wiresRemoved'] += sum(item['operation'].startswith('remove_') for item in result['repairs'])
             successful_tools[name] = successful_tools.get(name, 0) + 1
             change_key = {'add_component': 'componentsAdded', 'remove_component': 'componentsRemoved',
                           'modify_component': 'componentsModified', 'connect_wire': 'wiresAdded',

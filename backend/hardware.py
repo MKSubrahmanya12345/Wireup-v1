@@ -38,7 +38,7 @@ void loop() {
 '''
 TOOLS = (
     'read_project', 'search_components', 'add_component', 'remove_component',
-    'modify_component', 'connect_wire', 'remove_wire', 'generate_firmware',
+    'modify_component', 'connect_wire', 'remove_wire', 'check_connections', 'generate_firmware',
     'read_firmware', 'edit_firmware', 'compile_firmware', 'run_simulation',
     'stop_simulation', 'read_simulation_results', 'read_compiler_errors', 'calculator',
 )
@@ -997,6 +997,9 @@ class HardwareService:
         if name == 'wire_circuit':
             from backend.circuit_wiring import wire_circuit
             return await wire_circuit(self, project_id, args)
+        if name == 'check_connections':
+            from backend.circuit_wiring import check_connections
+            return await check_connections(self, project_id, args)
         if name == 'validate_circuit':
             from backend.circuit_wiring import validate_circuit
             return await validate_circuit(self, project_id)

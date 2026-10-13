@@ -1,0 +1,40 @@
+import { expect, test } from '@playwright/test'
+test.use({ reducedMotion: 'reduce' })
+test.setTimeout(120_000)
+for (const width of [1440, 390]) test(`Actual robotic-arm circuit remains contained at ${width}px`, async ({ page, request }) => {
+ const id = 'ff0b0110880044c5a725c54ab7249aa0'
+ const before = await (await request.get(`/api/hardware/projects/${id}`)).json()
+ await page.setViewportSize({ width, height: 900 }); await page.goto(`/project/${id}`)
+ const viewport = page.getByRole('region', { name: 'Circuit canvas', exact: true })
+ await expect(viewport).toBeVisible({ timeout: 30_000 })
+ await expect(page.locator('.hw-canvas-part')).toHaveCount(before.components.length)
+ await expect.poll(() => page.locator('.hw-canvas-world').evaluate(world => { const bounds = world.getBoundingClientRect(); return [...world.querySelectorAll('.hw-part-element')].every(part => { const box = part.getBoundingClientRect(); return box.left >= bounds.left && box.top >= bounds.top && box.right <= bounds.right && box.bottom <= bounds.bottom }) })).toBe(true)
+ await expect(viewport).toHaveCSS('overflow-x', 'auto'); await expect(viewport).toHaveCSS('scrollbar-width', 'auto')
+ await viewport.evaluate(element => { element.scrollLeft = element.scrollWidth; element.scrollTop = element.scrollHeight })
+ await expect.poll(() => viewport.evaluate(element => element.scrollLeft)).toBeGreaterThan(0)
+ await page.screenshot({ path: `test-results/robotic-canvas-scrolled-${width}.png`, fullPage: true })
+ await page.getByRole('button', { name: 'Fit circuit' }).click()
+ await expect(page.locator('.hw-wires')).toHaveCSS('overflow', 'visible')
+ await expect(page.locator('.hw-wire-hit')).toHaveCount(before.wires.length)
+ for (const knob of ['knob-shoulder', 'knob-elbow', 'knob-gripper']) {
+  const savedWire = before.wires.find((wire: { from: { component: string; pin: string }; to: { component: string; pin: string } }) => [wire.from, wire.to].some(endpoint => endpoint.component === knob && endpoint.pin === 'SIG'))
+  const wire = page.locator(`.hw-wire-hit[aria-label="Inspect wire ${savedWire.from.component}.${savedWire.from.pin} to ${savedWire.to.component}.${savedWire.to.pin}"]`)
+  await wire.press('Enter')
+  await page.getByRole('button', { name: `Show ${knob} pin SIG`, exact: true }).click()
+  const pin = page.getByRole('button', { name: `Connect ${knob} pin SIG`, exact: true })
+  await expect(pin).toBeInViewport()
+  const aligned = await wire.evaluate((path, { name, atStart }) => {
+   const svgPath = path as SVGPathElement
+   const end = svgPath.getPointAtLength(atStart ? 0 : svgPath.getTotalLength()).matrixTransform(svgPath.getScreenCTM()!)
+   const pin = document.querySelector(`[aria-label="Connect ${name} pin SIG"]`)!.getBoundingClientRect()
+   return Math.hypot(end.x - (pin.left + pin.width / 2), end.y - (pin.top + pin.height / 2))
+  }, { name: knob, atStart: savedWire.from.component === knob })
+  expect(aligned).toBeLessThan(1)
+  await page.getByRole('button', { name: 'Close wire details' }).click()
+ }
+ await page.getByRole('button', { name: 'Fit circuit' }).click()
+ await page.screenshot({ path: `test-results/robotic-canvas-fit-${width}.png`, fullPage: true })
+ expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+ const after = await (await request.get(`/api/hardware/projects/${id}`)).json()
+ expect(after.revision).toBe(before.revision); expect(after.components).toEqual(before.components)
+})

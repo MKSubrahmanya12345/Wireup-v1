@@ -1015,3 +1015,54 @@ def test_warning_prompt_matches_automatic_server_resolution():
     assert 'Warnings require user consent' not in agent.SYSTEM_PROMPT
     assert 'without asking\nfor a second confirmation' in agent.SYSTEM_PROMPT
     assert 'Incompatible or blocked plans authorize no changes' in agent.SYSTEM_PROMPT
+
+
+@pytest.mark.parametrize('repair', [False, True])
+def test_connection_check_agent_revisions_and_repair_authorization(tmp_path, monkeypatch, repair):
+    from backend.hardware import HardwareService
+    hardware = HardwareService(data_dir=tmp_path)
+    project = hardware.create_project(board='arduino-uno')
+    with hardware.lock:
+        stored = hardware._load(project['id'])
+        stored['wires'] = [{'id': 'alias', 'from': {'component': 'board', 'pin': 'D13'},
+                            'to': {'component': 'board', 'pin': '12'}}]
+        hardware._save(stored)
+    monkeypatch.setattr(agent, '_get_service', lambda: hardware)
+    turns = [[tool('read_project', {}, 'read')]]
+    if repair:
+        turns.append([assessment(parts=(), operations=('check_connections',))])
+    turns.extend([[tool('check_connections', {'repair': repair}, 'check')],
+                  [AIMessageChunk(content='Connections checked; electrical behavior is unverified.')]])
+    model = FakeModel(turns)
+    events = collect(model, project_id=project['id'],
+                     requirements={'behavior': 'idle'} if repair else None)
+    assert events[-1]['status'] == 'success'
+    updated = hardware.get_project(project['id'])
+    assert updated['revision'] == project['revision'] + int(repair)
+    assert updated['wires'][0]['from']['pin'] == ('13' if repair else 'D13')
+    assert events[-1]['successfulTools']['check_connections'] == 1
+    if repair:
+        record = next(iter(hardware._load(project['id'])['_feasibility'].values()))
+        assert record['revision'] == updated['revision']
+
+
+def test_connection_repair_cannot_bypass_confirmed_requirements(service):
+    model = FakeModel([[tool('read_project', {}, 'read')],
+                       [tool('check_connections', {'repair': True}, 'repair')],
+                       [AIMessageChunk(content='Repair requires confirmation.')]])
+    events = collect(model, project_id='current')
+    assert [call[1] for call in service.calls] == ['read_project']
+    assert 'User-confirmed requirements' in json.dumps(events)
+
+
+@pytest.mark.parametrize('read_first', [False, True])
+def test_connection_repair_requires_read_and_reviewed_operation(service, read_first):
+    turns = []
+    if read_first:
+        turns.extend([[tool('read_project', {}, 'read')],
+                      [assessment(parts=(), operations=('validate_circuit',))]])
+    turns.extend([[tool('check_connections', {'repair': True}, 'repair')],
+                  [AIMessageChunk(content='Repair was not authorized.')]])
+    events = collect(FakeModel(turns), project_id='current', requirements={'behavior': 'idle'})
+    assert not any(call[1] == 'check_connections' for call in service.calls)
+    assert ('outside reviewed plan' if read_first else 'read_project successfully') in json.dumps(events)
