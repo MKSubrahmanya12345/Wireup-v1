@@ -193,6 +193,15 @@ def test_calculator_feedback_and_selection_prose_suppressed(service):
     assert json.loads(feedback.content)['result'] == 4
     assert 'reasoning_content' not in model.histories[1][-2].additional_kwargs
     assert events[-1]['toolCalls'] == 1
+    start, end = events[1:3]
+    assert start == {'type': 'step_start', 'id': start['id'], 'label': 'Calculator',
+                     'command': 'calculator({"expression": "2+2"})',
+                     'toolName': 'calculator', 'args': {'expression': '2+2'}}
+    assert end == {'type': 'step_end', 'id': start['id'], 'status': 'success',
+                   'output': '{"expression": "2+2", "result": 4}',
+                   'result': {'expression': '2+2', 'result': 4}}
+    assert set(events[-1]) == {'type', 'status', 'reason', 'changes', 'successfulTools', 'model',
+                              'elapsedMs', 'usage', 'modelCalls', 'toolCalls'}
 
 
 def test_hardware_sequence_scoped_unique_and_redacted(service):
@@ -220,6 +229,16 @@ def test_hardware_sequence_scoped_unique_and_redacted(service):
     assert len({item['id'] for item in starts}) == 7
     assert [item['id'] for item in starts] == [item['id'] for item in ends]
     assert all(item['status'] == 'success' for item in ends)
+    assert [item['toolName'] for item in starts] == [
+        'read_project', 'assess_project_feasibility', 'add_component', 'generate_firmware',
+        'compile_firmware', 'read_project', 'validate_circuit',
+    ]
+    assert all(item['command'] == item['toolName'] + '(' + json.dumps(item['args'], ensure_ascii=False) + ')'
+               for item in starts)
+    assert all(item['result'] == json.loads(item['output']) for item in ends)
+    assert all(item['args'] == {} for item in starts[-2:])
+    assert ends[-2]['result']['revision'] == service.revision
+    assert ends[-1]['result'] == {'valid': True, 'errors': [], 'revision': service.revision}
     assert 'private-token' not in json.dumps(events)
     assert 'private-token' not in str(model.histories)
 
@@ -238,6 +257,13 @@ def test_validation_feedback(service, name, args, project, error):
     end = next(item for item in events if item['type'] == 'step_end')
     assert end['status'] == 'error'
     assert error in end['output']
+    start = next(item for item in events if item['type'] == 'step_start')
+    assert start['toolName'] == name
+    assert start['args'] == args
+    assert end['id'] == start['id']
+    assert end['result'] == json.loads(end['output'])
+    assert end['result']['status'] == 'error'
+    assert error in end['result']['error']
     assert model.histories[1][-1].status == 'error'
     assert not service.calls
 
@@ -253,7 +279,82 @@ def test_failed_tool_result_is_error_and_feedback(service):
     assert events[-1]['status'] == 'error'
     assert events[-1]['toolCalls'] == len([event for event in events if event['type'] == 'step_start'])
     assert 'Compiler is unavailable' in json.dumps(events)
+    end = [item for item in events if item['type'] == 'step_end'][-1]
+    assert end['result'] == service.result == json.loads(end['output'])
     assert model.histories[-1][-1].status == 'error'
+
+
+def test_structured_args_and_results_use_public_payloads(service, monkeypatch):
+    args = {'expression': '2+2', 'runtime_token': 'private-token',
+            'nested': {'runtime_token': 'nested-token', 'value': 4}}
+    model = FakeModel([[tool('calculator', args)], [AIMessageChunk(content='Invalid arguments.')]])
+    events = collect(model)
+    start = next(item for item in events if item['type'] == 'step_start')
+    assert start['args'] == {'expression': '2+2', 'nested': {'value': 4}}
+    assert 'private-token' not in json.dumps(events)
+    assert 'nested-token' not in json.dumps(events)
+
+    async def command(*args, **kwargs):
+        return {'result': 4, 'nested': [{'runtime_token': 'private-token', 'value': 4}]}
+
+    monkeypatch.setattr(service, 'command', command)
+    model = FakeModel([[tool('calculator', {'expression': '2+2'})], [AIMessageChunk(content='4')]])
+    events = collect(model)
+    end = next(item for item in events if item['type'] == 'step_end')
+    assert end['result'] == {'result': 4, 'nested': [{'value': 4}]}
+    assert end['result'] == json.loads(end['output'])
+    assert 'private-token' not in json.dumps(events)
+
+
+def test_caught_tool_failure_has_redacted_structured_result(service, monkeypatch):
+    from fastapi import HTTPException
+
+    async def command(*args, **kwargs):
+        raise HTTPException(status_code=503, detail={
+            'error': 'Unavailable for private-token', 'authorization': 'secret',
+        })
+
+    monkeypatch.setattr(service, 'command', command)
+    model = FakeModel([[tool('calculator', {'expression': '2+2'})], [AIMessageChunk(content='Unavailable.')]])
+    events = collect(model, runtime_token='private-token')
+    end = next(item for item in events if item['type'] == 'step_end')
+    assert end['status'] == 'error'
+    assert end['result'] == json.loads(end['output'])
+    assert end['result']['status'] == 'error'
+    assert json.loads(end['result']['error']) == {'error': 'Unavailable for [redacted]'}
+    assert 'private-token' not in json.dumps(events)
+    assert 'secret' not in json.dumps(events)
+
+
+@pytest.mark.parametrize('check', ['read_project', 'validate_circuit'])
+@pytest.mark.parametrize('failure', ['exception', 'limit'])
+def test_final_check_caught_failure_has_structured_error(service, monkeypatch, check, failure):
+    command = service.command
+
+    async def failing_command(project_id, name, args, runtime_token=None):
+        if name == check and service.revision > 4:
+            if failure == 'limit':
+                raise agent._LimitReached('Final check limit reached.')
+            raise ValueError('private-token')
+        return await command(project_id, name, args, runtime_token=runtime_token)
+
+    monkeypatch.setattr(service, 'command', failing_command)
+    model = FakeModel([
+        [tool('read_project', {}, 'read')], [assessment()],
+        [tool('add_component', {'type': 'led'}, 'add')], [AIMessageChunk(content='Added.')],
+    ])
+    events = collect(model, project_id='current', runtime_token='private-token', requirements={'behavior': 'blink'})
+    starts = [item for item in events if item['type'] == 'step_start']
+    ends = [item for item in events if item['type'] == 'step_end']
+    assert [item['id'] for item in starts] == [item['id'] for item in ends]
+    assert starts[-1]['toolName'] == check
+    assert starts[-1]['args'] == {}
+    assert ends[-1]['status'] == 'error'
+    assert ends[-1]['result'] == {'status': 'error', 'error': ends[-1]['output']}
+    assert events[-1]['reason'] == ('limit' if failure == 'limit' else 'model_error')
+    assert events[-1]['toolCalls'] == len(starts)
+    assert 'private-token' not in json.dumps(events)
+    assert not any(item.get('channel') == 'answer' for item in events)
 
 
 def test_duplicate_ids_never_replay_mutation(service):
@@ -454,6 +555,10 @@ def test_timeout_active_tool_has_matching_error_end(service, monkeypatch):
     assert start['id'] == end['id']
     assert end['status'] == 'error'
     assert events[-1]['reason'] == 'timeout'
+    assert end['output'] == 'Agent time limit reached.'
+    assert end['result'] == {'status': 'error', 'error': end['output']}
+    assert start['toolName'] == 'calculator'
+    assert start['args'] == {'expression': '2+2'}
     assert closed == [True]
 
 

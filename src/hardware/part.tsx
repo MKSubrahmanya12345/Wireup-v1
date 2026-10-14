@@ -4,6 +4,7 @@ import { readPinInfo } from '../../vendor/velxio/frontend/src/utils/readPinInfo'
 import '../../vendor/velxio/frontend/src/elements-register'
 import type { HardwareComponent, HardwarePin } from '../lib/hardware'
 import type { HardwareRuntime } from './runtime'
+import { applyElementProperties } from './element-properties'
 
 export function HardwarePart({ part, runtime, pinsChanged, sizeChanged }: {
   part: HardwareComponent; runtime: HardwareRuntime | null; pinsChanged: (id: string, pins: HardwarePin[]) => void
@@ -13,6 +14,7 @@ export function HardwarePart({ part, runtime, pinsChanged, sizeChanged }: {
   const element = useRef<HTMLElement | null>(null)
   const [unavailable, setUnavailable] = useState(false)
   const properties = useRef(part.properties)
+  const defaults = useRef<Record<string, unknown>>({})
   useEffect(() => {
     const container = host.current
     if (!container || !sizeChanged) return
@@ -24,6 +26,19 @@ export function HardwarePart({ part, runtime, pinsChanged, sizeChanged }: {
   }, [part.id, sizeChanged])
   useEffect(() => { properties.current = part.properties }, [part.properties])
   useEffect(() => {
+    const sources = new Set(['source-dc-voltage', 'source-dc-current', 'source-sine-voltage', 'source-pulse-voltage', 'source-pwl-voltage', 'source-ac-voltage', 'ground'])
+    if (sources.has(part.type) && host.current) {
+      const image = document.createElement('img')
+      image.src = `/component-svgs/${part.type}.svg`
+      image.alt = part.type === 'ground' ? 'Ground symbol' : 'Electrical source symbol'
+      image.width = 64
+      image.height = 64
+      host.current.replaceChildren(image)
+      setUnavailable(false)
+      const locations = part.type === 'ground' ? [{ name: 'GND', x: 32, y: 8 }] : [{ name: '+', x: 2, y: 32 }, { name: '-', x: 62, y: 32 }]
+      pinsChanged(part.id, locations.map((pin, index) => ({ ...pin, number: index + 1, signals: [] })))
+      return () => image.remove()
+    }
     let active = true
     let timer: ReturnType<typeof setInterval> | undefined
     let current: HTMLElement | null = null
@@ -39,7 +54,8 @@ export function HardwarePart({ part, runtime, pinsChanged, sizeChanged }: {
       current = document.createElement(tag)
       if (espVariant) current.setAttribute('board-kind', espVariant)
       element.current = current
-      Object.assign(current, metadata?.defaultValues ?? {}, properties.current)
+      defaults.current = metadata?.defaultValues ?? {}
+      applyElementProperties(current, { ...defaults.current, ...properties.current }, defaults.current)
       host.current.replaceChildren(current)
       runtime?.registerElement(part.id, current)
       const read = () => {
@@ -61,8 +77,8 @@ export function HardwarePart({ part, runtime, pinsChanged, sizeChanged }: {
   }, [part.id, part.type, runtime, pinsChanged])
   useEffect(() => {
     if (element.current) {
-      Object.assign(element.current, part.properties)
-      runtime?.updateComponentProperties(part.id, part.properties)
+      const applied = applyElementProperties(element.current, part.properties, defaults.current)
+      runtime?.updateComponentProperties(part.id, applied)
     }
   }, [part.id, part.properties, runtime])
   return <div className="hw-part-element" ref={host}>{unavailable && <div className="hw-unavailable">{part.type}<small>Element unavailable · placement only</small></div>}</div>

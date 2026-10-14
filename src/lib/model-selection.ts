@@ -6,6 +6,12 @@ export const defaultModels: ModelOption[] = [
   { id: 'bedrock', label: 'Amazon Bedrock', model: 'Configured Bedrock model', configured: false },
   { id: 'azure', label: 'Azure', model: 'gpt-6.1-sol', configured: false },
 ]
+export function modelOptionKey(option: ModelOption): string {
+  return `${option.id}::${option.model}`
+}
+export function readSelectedModel(): string {
+  try { return localStorage.getItem('wireup.model-id') || '' } catch { return '' }
+}
 export function readModelSelection(): ModelProvider {
   try {
     const saved = localStorage.getItem('wireup.model-provider')

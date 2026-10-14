@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import { CircuitBoard } from 'lucide-react'
 import { hardwareApi, isHardwareProject } from '@/lib/hardware'
+import { loadWorkspaceModule } from '@/lib/workspace-module'
 import type { CatalogComponent, HardwareProject } from '@/lib/hardware'
 import type { HardwareRuntime, RuntimeResults } from '@/hardware/runtime'
 import type { AnalogSolveResult } from '@/hardware/spice'
@@ -15,7 +16,7 @@ import './ui-theme.css'
 const Preview = lazy(() => import('@/components/demo'))
 const SchematicStudio = lazy(() => import('@/components/schematic-studio').then(module => ({ default: module.SchematicStudio })))
 const HardwareInstruments = lazy(() => import('@/components/hardware-instruments').then(module => ({ default: module.HardwareInstruments })))
-const HardwareWorkspace = lazy(() => import('@/components/hardware-workspace').then(module => ({ default: module.HardwareWorkspace })))
+const HardwareWorkspace = lazy(() => loadWorkspaceModule().then(module => ({ default: module.HardwareWorkspace })))
 
 function ProjectPage() {
   const [project, setProject] = useState<HardwareProject | null>(null)

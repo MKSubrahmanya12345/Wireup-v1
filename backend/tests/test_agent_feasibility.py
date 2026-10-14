@@ -277,6 +277,15 @@ def test_final_invalid_circuit_is_not_success(services):
     events = collect(model)
     assert events[-1]['status'] == 'error'
     assert 'Short circuit' in json.dumps(events)
+    starts = [event for event in events if event['type'] == 'step_start']
+    ends = [event for event in events if event['type'] == 'step_end']
+    assert [event['id'] for event in starts] == [event['id'] for event in ends]
+    assert starts[-1]['toolName'] == 'validate_circuit'
+    assert starts[-1]['args'] == {}
+    assert ends[-1]['status'] == 'error'
+    assert ends[-1]['result'] == json.loads(ends[-1]['output']) == {
+        'valid': False, 'errors': ['Short circuit'], 'revision': hardware.revision,
+    }
     assert not any(event.get('channel') == 'answer' for event in events)
 
 

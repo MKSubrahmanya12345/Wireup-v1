@@ -1,0 +1,20 @@
+#root .nova-home.dark:not(.hardware-workspace) .home-grid-intro>header{background:transparent!important;backdrop-filter:none;border-bottom:0!important}
+.home-grid-intro{background-image:linear-gradient(#84775f38 1px,transparent 1px),linear-gradient(90deg,#84775f38 1px,transparent 1px),linear-gradient(#84775f1f 1px,transparent 1px),linear-gradient(90deg,#84775f1f 1px,transparent 1px);background-size:100px 100px,100px 100px,20px 20px,20px 20px}
+.home-workbench{position:relative;isolation:isolate;min-height:680px}
+.home-workbench-art{position:absolute;top:0;bottom:0;left:50%;width:min(1384px,100vw);transform:translateX(-50%);z-index:-1;pointer-events:none;overflow:hidden}
+.home-board{position:absolute;margin:0;width:380px;top:42px;opacity:.8;mix-blend-mode:multiply}
+.home-board img{display:block;width:100%;height:auto}
+.home-board figcaption{font:10px 'Roboto Mono',monospace;letter-spacing:.08em;margin-top:12px;color:#494336}
+.home-board-uno{left:4%}
+.home-board-esp{right:5%;width:290px}
+.home-connections{position:absolute;top:10px;left:0;width:100%;height:440px;stroke:#fffdf3;stroke-width:1.7;opacity:.85;filter:drop-shadow(0 0 6px #fffdf3)}
+.home-connections path:nth-child(2){stroke-width:5;opacity:.4}
+.home-connections circle{fill:#fffdf3;stroke:none}
+.home-schematic{position:absolute;bottom:10px;left:0;width:100%;height:230px;stroke:#6a604e;stroke-width:1;opacity:.16}
+.home-workbench>section{position:relative}
+.home-workbench h1{position:relative;text-shadow:0 2px 12px #fcf0da,0 0 30px #fcf0da}
+.home-workbench>section>p{position:relative;text-shadow:0 0 8px #fcf0da,0 0 16px #fcf0da}
+.home-workbench-art::before{content:'';position:absolute;inset:0;background:linear-gradient(90deg,#d4b58a33,transparent 8%,transparent 92%,#d4b58a33)}
+@media(min-width:1600px){.home-board-uno{left:2%;width:420px}.home-board-esp{right:3%;width:320px}}
+@media(max-width:1050px){.home-board{opacity:.3;width:230px;left:-40px;top:45px}.home-board-esp{left:auto;right:-15px;width:150px}.home-connections{opacity:.55}.home-workbench{min-height:650px}}
+@media(max-width:600px){.home-board{width:150px;left:-45px;top:25px;opacity:.23}.home-board-esp{left:auto;right:-30px;width:100px;top:45px}.home-board figcaption{display:none}.home-connections{top:0;height:300px;opacity:.45}.home-schematic{height:130px;bottom:25px}.home-workbench{min-height:590px}}

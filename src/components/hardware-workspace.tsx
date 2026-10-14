@@ -15,7 +15,6 @@ import './hardware-workspace.css'
 import { WorkspaceLoading } from './ui/workspace-loading'
 import { ProjectDetails } from './project-details'
 import { BuildGuide } from './build-guide'
-import { BreadboardView } from './breadboard-view'
 import { compactCatalogName, catalogTooltip } from '../lib/catalog-label'
 import { BoardFlashDialog } from './ui/board-flash-dialog'
 import { visibleForBuilding } from '../lib/simulation-catalog'
@@ -117,7 +116,6 @@ export function HardwareWorkspace({ chatSlot, children, onProjectChange, schemat
   }, { replace: true }), [setSearchParams])
   const [simulationOpen, setSimulationOpen] = useState(false)
   const [pinLabelsOpen, setPinLabelsOpen] = useState(true)
-  const [breadboardOpen, setBreadboardOpen] = useState(false)
   const [selected, setSelected] = useState('board')
   const [actionPartId, setActionPartId] = useState<string | null>(null)
   const [actionsPinned, setActionsPinned] = useState(false)
@@ -165,6 +163,30 @@ export function HardwareWorkspace({ chatSlot, children, onProjectChange, schemat
   const [properties, setProperties] = useState('{}')
   const [position, setPosition] = useState({ x: 0, y: 0, rotation: 0 })
   const [zoom, setZoom] = useState(1)
+  const wheelZoomAnchor = useRef<{ x: number; y: number; localX: number; localY: number } | null>(null)
+  useEffect(() => {
+    const viewport = canvasViewport.current
+    if (!viewport) return
+    const wheel = (event: WheelEvent) => {
+      if (event.deltaY === 0) return
+      event.preventDefault()
+      const rect = viewport.getBoundingClientRect()
+      const localX = event.clientX - rect.left
+      const localY = event.clientY - rect.top
+      wheelZoomAnchor.current = { x: (viewport.scrollLeft + localX) / zoom, y: (viewport.scrollTop + localY) / zoom, localX, localY }
+      const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? viewport.clientHeight : 1)
+      setZoom(value => Math.max(.25, Math.min(2, value * Math.exp(-delta * .002))))
+    }
+    viewport.addEventListener('wheel', wheel, { passive: false })
+    return () => viewport.removeEventListener('wheel', wheel)
+  }, [zoom, loading, activeView, section, projectId])
+  useEffect(() => {
+    const anchor = wheelZoomAnchor.current
+    if (!anchor || !canvasViewport.current) return
+    canvasViewport.current.scrollLeft = anchor.x * zoom - anchor.localX
+    canvasViewport.current.scrollTop = anchor.y * zoom - anchor.localY
+    wheelZoomAnchor.current = null
+  }, [zoom])
   const [dragPreview, setDragPreview] = useState<{ id: string; x: number; y: number } | null>(null)
   const dragCleanup = useRef<(() => void) | null>(null)
   useEffect(() => () => { dragCleanup.current?.() }, [projectId])
@@ -220,8 +242,6 @@ export function HardwareWorkspace({ chatSlot, children, onProjectChange, schemat
   useEffect(() => {
     let active = true
     const controller = new AbortController()
-    const loadingStarted = performance.now()
-    let finishTimer: ReturnType<typeof setTimeout> | undefined
     setLoading(true); setLoadError(''); setError(''); setProject(null); projectRef.current = null
     setSelected('board'); setActionPartId(null); setActionsPinned(false); setPins({}); setResults(null); setWireStart(null)
     if (!projectId) {
@@ -232,9 +252,9 @@ export function HardwareWorkspace({ chatSlot, children, onProjectChange, schemat
     void hardwareApi.getProject(projectId, { signal: controller.signal }).then(value => {
       if (active) acceptProject(value, true)
     }).catch(error => { if (active) setLoadError(error.message) }).finally(() => {
-      finishTimer = setTimeout(() => { if (active) setLoading(false) }, Math.max(0, 1400 - (performance.now() - loadingStarted)))
+      if (active) setLoading(false)
     })
-    return () => { active = false; controller.abort(); clearTimeout(finishTimer) }
+    return () => { active = false; controller.abort() }
   }, [projectId, acceptProject, loadAttempt])
 
   useEffect(() => { onProjectChange?.(project) }, [project, onProjectChange])
@@ -573,13 +593,6 @@ export function HardwareWorkspace({ chatSlot, children, onProjectChange, schemat
         <div className="hw-view-tabs" role="tablist" aria-label="Design view"><button role="tab" aria-selected={activeView === 'circuit'} onClick={() => changeView('circuit')}><CircuitBoard size={15} /> Circuit</button><button role="tab" aria-selected={activeView === 'schematic'} onClick={() => changeView('schematic')}><Zap size={15} /> Schematic</button></div>
         <button type="button" onClick={() => setConnectionCheckOpen(true)}><Cable size={14} />Check connections</button>
         <button type="button" aria-pressed={pinLabelsOpen} onClick={() => setPinLabelsOpen(value => !value)}>Connected pins</button>
-        <button type="button" disabled={mutationDisabled || project.components.every(part => part.id === 'board')} onClick={() => void perform('Connecting through breadboard', async () => {
-          const current = projectRef.current!;
-          const result = await hardwareApi.command<{project:HardwareProject;changed:boolean;reason:string}>(current, 'route_breadboard', {expected_revision:current.revision});
-          acceptProject(result.project); setNotice(result.reason);
-          if (result.changed) { setSelected(result.project.components.find(part => part.type === 'breadboard-mini')?.id ?? ''); setWireDetails(null); }
-          else if (result.project.components.some(part => part.type.startsWith('breadboard'))) setBreadboardOpen(true);
-        })}>Use breadboard</button>
         <div className="hw-actions">
           <button type="button" aria-expanded={simulationOpen} aria-controls="workspace-simulation-tools" onClick={() => setSimulationOpen(open => !open)}><Play size={14}/>Simulation</button>
           <div id="workspace-simulation-tools" className="hw-simulation-tools" hidden={!simulationOpen}>
@@ -637,7 +650,6 @@ export function HardwareWorkspace({ chatSlot, children, onProjectChange, schemat
         <aside className="hw-agent-panel">{!agent && <div className="hw-panel-heading"><Zap size={15} /> WireUp agent</div>}{agent ?? <div className="hw-agent-empty"><div className="hw-agent-symbol"><Zap size={24} /></div><h2>A collaborator for your circuit.</h2><p>Ask the project agent to add parts, write firmware, and inspect the real compiler and simulator.</p><div className="hw-agent-context"><Cpu size={14} /> {project.name}<small>Canonical project · revision {project.revision}</small></div><p className="hw-muted">The agent panel is supplied by the host application. Manual tools remain available below the editor.</p></div>}</aside>
       </div>
       {connectionCheckOpen && <ConnectionCheck key={project.id} project={project} dirty={dirty} repairDisabled={mutationDisabled} onProjectChange={acceptProject} onClose={() => setConnectionCheckOpen(false)} onShowPart={id => { setConnectionCheckOpen(false); setSection('wiring'); setTab('circuit'); setSelected(id); const endpoint = project.wires.flatMap(wire => [wire.from, wire.to]).find(endpoint => endpoint.component === id); if (endpoint) revealPin(endpoint) }}/>}
-      {breadboardOpen && <BreadboardView project={project} onClose={() => setBreadboardOpen(false)}/>}
       {detailsOpen && <ProjectDetails project={project} catalog={knownCatalog} onClose={() => setDetailsOpen(false)} onOpenPart={id => { setDetailsOpen(false); setSection('wiring'); setTab('parts'); setComponentsOpen(true); setSelected(id); requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('.hw-inspector textarea')?.focus()) }} onOpenWiring={() => { setDetailsOpen(false); setSection('wiring'); setTab('circuit') }} onOpenCode={() => { setDetailsOpen(false); setSection('code'); setTab('circuit') }}/>}
       {networkOpen && <EspNetworkDialog projectId={project.id} board={project.board} running={!!results?.running} onClose={() => setNetworkOpen(false)}/>}
       {flashOpen && <BoardFlashDialog project={project} dirty={dirty} running={!!results?.running} onClose={() => setFlashOpen(false)}/>}

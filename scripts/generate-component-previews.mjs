@@ -1,6 +1,7 @@
 import { chromium } from '@playwright/test'
 import { readFile, mkdir, access } from 'node:fs/promises'
 
+const selected = new Set(process.argv.slice(2))
 const catalog = JSON.parse(await readFile('public/components-metadata.json', 'utf8')).components
 await mkdir('public/component-previews', { recursive: true })
 const browser = await chromium.launch({ channel: 'chrome' })
@@ -10,11 +11,12 @@ await page.evaluate(async () => {
   const path = '/vendor/velxio/frontend/src/elements-register.ts'
   await import(path)
   document.body.replaceChildren()
-  document.body.style.cssText = 'margin:0;background:#151515;display:flex;align-items:center;justify-content:center;width:400px;height:300px;overflow:hidden'
+  document.body.style.cssText = 'margin:0;background:#151515;--color-symbol-ink:#e2e5eb;--color-symbol-lead:#bec4ce;--color-symbol-label:#e2e5eb;--color-symbol-body:#858d99;display:flex;align-items:center;justify-content:center;width:400px;height:300px;overflow:hidden'
 })
 let generated = 0
 const missing = []
 for (const part of catalog) {
+  if (selected.size && !selected.has(part.id)) continue
   if (part.thumbnail?.trim().startsWith('<svg')) continue
   try { await access(`public/component-svgs/${part.id}.svg`); continue } catch {}
   const rendered = await page.evaluate(async part => {

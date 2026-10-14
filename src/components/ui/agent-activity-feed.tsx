@@ -2,61 +2,11 @@ import { useEffect, useState } from 'react'
 import { Check, ChevronRight, CircleX, LoaderCircle } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import type { ActivityBlock } from '@/lib/agent-activity'
 import './agent-activity-feed.css'
 
-export type ActivityBlock =
-  | { type: 'text'; id: string; text: string; channel?: 'answer' | 'narration' | 'thinking' }
-  | { type: 'step'; id: string; label: string; command: string; status: 'running' | 'success' | 'error' | 'stopped'; output: string }
-export type ActivityEvent =
-  | { type: 'text'; text: string; channel?: 'answer' | 'narration' | 'thinking' }
-  | { type: 'step_start'; id: string; label: string; command: string }
-  | { type: 'step_end'; id: string; status: 'success' | 'error' | 'stopped'; output: string }
-  | { type: 'done'; model?: string; elapsedMs?: number; usage?: { input_tokens: number; output_tokens: number; total_tokens: number } | null }
-
-export function appendActivity(blocks: ActivityBlock[], event: ActivityEvent): ActivityBlock[] {
-  if (event.type === 'text') {
-    const last = blocks.at(-1)
-    if (last?.type === 'text' && last.channel === event.channel) return [...blocks.slice(0, -1), { ...last, text: last.text + event.text }]
-    return [...blocks, { type: 'text', id: crypto.randomUUID(), text: event.text, channel: event.channel }]
-  }
-  if (event.type === 'step_start') return [...blocks, { type: 'step', id: event.id, label: event.label, command: event.command, status: 'running', output: '' }]
-  if (event.type === 'step_end') return blocks.map(block => block.type === 'step' && block.id === event.id ? { ...block, status: event.status, output: event.output } : block)
-  return blocks
-}
-
-export async function readActivityStream(response: Response, onEvent: (event: ActivityEvent) => void) {
-  if (!response.body) throw new Error('The server returned an empty stream.')
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  let completed = false
-  const line = (value: string) => {
-    if (!value.trim()) return
-    const event = JSON.parse(value)
-    if (event.type === 'error') throw new Error(event.message || 'Generation failed. Please retry.')
-    if (event.type === 'done') completed = true
-    onEvent(event)
-  }
-  try {
-    while (true) {
-      let timer: ReturnType<typeof setTimeout> | undefined
-      const { value, done } = await Promise.race([
-        reader.read(),
-        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('The AI connection stopped sending updates for 45 seconds. Please retry or select another model.')), 45_000) }),
-      ]).finally(() => clearTimeout(timer))
-      buffer += decoder.decode(value, { stream: !done })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-      for (const value of lines) line(value)
-      if (done || completed) break
-    }
-    line(buffer)
-    if (!completed) throw new Error('The stream ended before completion. Please retry.')
-  } finally {
-    await reader.cancel().catch(() => {})
-    reader.releaseLock()
-  }
-}
+export { appendActivity, readActivityStream } from '@/lib/agent-activity'
+export type { ActivityBlock, ActivityEvent } from '@/lib/agent-activity'
 
 type AnswerBlock = Extract<ActivityBlock, { type: 'text' }>
 

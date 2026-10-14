@@ -36,8 +36,9 @@ class FakeModel:
 
 def events(response):
     streamed = [json.loads(line) for line in response.text.splitlines()]
-    assert streamed[0]['type'] == 'text'
-    assert streamed[0]['text'].startswith('Connecting to ')
+    assert streamed[0] == {'type': 'heartbeat'}
+    assert 'Connecting to ' not in response.text
+    assert 'Preparing board and circuit questions' not in response.text
     return streamed[1:]
 
 
@@ -216,7 +217,7 @@ def test_chat_project_scope_and_runtime_token(tmp_path, monkeypatch):
     source = 'void setup() {}\nvoid loop() {}'
     model = FakeModel(turns=[
         [tool_chunk('read_project', {}, 'read')],
-        [tool_chunk('assess_project_feasibility', {'plan': {'board': 'arduino-uno', 'parts': [], 'behavior': 'idle', 'libraries': [], 'operations': ['edit_firmware']}}, 'assess')],
+        [tool_chunk('read_firmware', {}, 'firmware')],
         [tool_chunk('edit_firmware', {'source': source, 'expected_revision': 1}, 'edit')],
         [tool_chunk('read_project', {}, 'readback')],
         [tool_chunk('validate_circuit', {}, 'validate')],
@@ -246,6 +247,7 @@ def test_chat_project_scope_and_runtime_token(tmp_path, monkeypatch):
     assert [item['id'] for item in starts] == [item['id'] for item in ends]
     assert all(item['status'] == 'success' for item in ends)
     assert calls == [(project['id'], 'read_project', project['runtime_token']),
+                     (project['id'], 'read_firmware', project['runtime_token']),
                      (project['id'], 'edit_firmware', project['runtime_token']),
                      (project['id'], 'read_project', project['runtime_token']),
                      (project['id'], 'validate_circuit', project['runtime_token'])]

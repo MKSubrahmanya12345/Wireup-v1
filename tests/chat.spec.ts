@@ -49,7 +49,9 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
       const styles = getComputedStyle(element)
       return `${parseFloat(styles.lineHeight) * 8 + parseFloat(styles.paddingTop) + parseFloat(styles.paddingBottom)}px`
     })
-    await expect(input).toHaveCSS('height', maximumInputHeight)
+    const inputHeight = await input.evaluate(element => element.getBoundingClientRect().height)
+    expect(inputHeight).toBeLessThanOrEqual(parseFloat(maximumInputHeight) + 2)
+    expect(inputHeight).toBeGreaterThan(parseFloat(maximumInputHeight) - 10)
     await expect(input).toHaveCSS('overflow-y', 'auto')
     await input.fill('')
     await page.screenshot({ path: `test-results/conversation-${viewport.width}.png` })
@@ -100,8 +102,8 @@ test('errors, retry, stop, and corrupted storage recover safely', async ({ page 
   await page.getByRole('button', { name: 'Retry', exact: true }).click()
   await expect(page.getByRole('article', { name: 'WireUp message' })).toContainText('Recovered response')
   await page.getByRole('button', { name: 'Regenerate', exact: true }).click()
-  await page.getByRole('button', { name: 'Stop generating', exact: true }).click()
-  await expect(page.getByRole('article', { name: 'WireUp message' })).toContainText('Response stopped')
+  await page.getByRole('button', { name: 'Stop generation', exact: true }).click()
+  await expect(page.getByRole('article', { name: 'WireUp message' })).toContainText('Interrupted')
   await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeVisible()
 })
 

@@ -306,6 +306,27 @@ def _build_intent(text):
     return bool(re.search(r'\b(?:build|create|make|assemble|wire|connect|compile|generate|implement|add|edit|modify|replace|remove|run|start|blink|sweep)\b', text, re.I))
 
 
+def _firmware_intent(text):
+    if re.search(r'^\s*(?:how (?:do|can|would)|explain|what (?:is|are)|tell me about)\b', text, re.I):
+        return False
+    text = re.sub(r'\b(?:do not|don\'t|never|without)\b[^.;\n]*', '', text, flags=re.I)
+    if not re.search(r'\b(?:firmware|code|sketch|software)\b', text, re.I):
+        return False
+    if re.search(r'\b(?:build|assemble|wire|rewire|connect|disconnect)\b|'
+                 r'\b(?:add|remove|replace|change|modify|update|move|switch|use|create|make|generate)\s+(?:(?:the|a|an|existing|selected|current|new)\s+)*'
+                 r'(?:board|circuit|wires?|wiring|pins?|components?)\b|'
+                 r'\b(?:add|remove|replace)\s+(?:[\w-]+\s+){0,3}'
+                 r'(?:boards?|circuits?|components?|sensors?|leds?|resistors?|motors?|servos?|displays?|buttons?)\b', text, re.I):
+        return False
+    return bool(re.search(r'\b(?:edit|change|update|fix|generate|write|create|replace|modify|implement|add|remove)\b', text, re.I))
+
+
+_FIRMWARE_TOOLS = frozenset({
+    'read_project', 'read_firmware', 'generate_firmware', 'edit_firmware',
+    'compile_firmware', 'read_compiler_errors', 'validate_circuit', 'check_connections', 'calculator',
+})
+
+
 def _bounded(value, default, ceiling):
     if value is None:
         return default
@@ -468,6 +489,7 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
     needs_questions = False
     paused = False
     build_requested = False
+    firmware_requested = False
     compile_requested = False
     emergency_stop = False
     successful_tools: dict[str, int] = {}
@@ -486,6 +508,8 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
         nonlocal project_read, project_revision, paused, selected_board, board_unselected
         nonlocal assessment, approval_id, approved_plan, compile_attempts, current_compile, compile_requested
         nonlocal readback_revision, validation_revision
+        if firmware_requested and (name not in _FIRMWARE_TOOLS or name == 'check_connections' and args.get('repair', False)):
+            raise ValueError('This request is firmware-only. Preserve the current circuit; topology changes require confirmed requirements and feasibility review.')
         if name == 'ask_project_questions':
             if len({question['id'] for question in args['questions']}) != len(args['questions']):
                 raise ValueError('Question IDs must be unique.')
@@ -540,7 +564,7 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
             raise ValueError('Call read_project successfully before mutating or compiling the current project.')
         if (name in _CONFIRM_FIRST or repairing_connections) and not confirmed:
             raise ValueError('User-confirmed requirements are required before project mutations, compilation, or simulation start. Call ask_project_questions and wait for answers.')
-        if confirmed and project_id and not approval_id and name not in _ASSESSMENT_TOOLS and name != 'stop_simulation':
+        if confirmed and project_id and not approval_id and not firmware_requested and name not in _ASSESSMENT_TOOLS and name != 'stop_simulation':
             raise ValueError('Assess the complete project plan and obtain approval before any placement, mutation, compilation, or runtime operation.')
         if name == 'search_example_requirements':
             from backend.example_requirements import search_example_requirements
@@ -568,7 +592,7 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
                 approved_plan = None
                 raise ValueError('The proposed design contains incompatible devices. Select only the compatible choices from the setup answers; no changes were authorized. Details: ' + json.dumps(assessment.get('issues', [])))
             return assessment
-        if name in _CONFIRM_FIRST or repairing_connections:
+        if (name in _CONFIRM_FIRST or repairing_connections) and (approval_id or not firmware_requested):
             if not approval_id:
                 raise ValueError('Complete the feasibility review before changing the project.')
             _get_feasibility().check_operation(_get_service(), project_id, approval_id, name, args)
@@ -652,7 +676,8 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
                 project_revision = result['revision']
             connections_changed = name == 'check_connections' and result.get('changed') is True
             if name in _MUTATIONS or connections_changed:
-                _get_feasibility().advance(_get_service(), project_id, approval_id, previous_revision, project_revision)
+                if approval_id:
+                    _get_feasibility().advance(_get_service(), project_id, approval_id, previous_revision, project_revision)
                 readback_revision = None
                 validation_revision = None
                 current_compile = None
@@ -710,21 +735,19 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
             require_tools = not successful_tools.get('stop_simulation') and not failed_tools.get('stop_simulation')
         elif needs_questions:
             available = [tool for tool in tools if tool.name == 'ask_project_questions']
+        elif firmware_requested:
+            available = [tool for tool in tools if tool.name in _FIRMWARE_TOOLS]
         elif confirmed and project_id and not approval_id:
             available = [tool for tool in tools if tool.name in _ASSESSMENT_TOOLS]
             require_tools = True
-        if approved_plan and approval_id and not emergency_stop:
+        if (approved_plan and approval_id or firmware_requested) and not emergency_stop:
             excluded = {'assess_project_feasibility', 'ask_project_questions'}
             from backend.hardware import BOARD_CONFIG
-            board_capability = BOARD_CONFIG.get(approved_plan['board'], {})
+            board_capability = BOARD_CONFIG.get(selected_board if firmware_requested else approved_plan['board'], {})
             if board_capability.get('simulation') == 'unavailable': excluded.update({'run_simulation','stop_simulation','read_simulation_results'})
             if board_capability.get('compile') is False: excluded.update({'compile_firmware','read_compiler_errors'})
             available = [tool for tool in available if tool.name not in excluded]
         bound_model = model.bind_tools(available, tool_choice='required' if require_tools else 'auto')
-        if needs_questions or build_requested:
-            phase = 'Preparing board and circuit questions' if needs_questions else (
-                'Planning the next project operation' if require_tools else 'Reviewing tool results and remaining build work')
-            writer({'type': 'text', 'channel': 'narration', 'text': phase + '.\n'})
         for attempt in range(2):
             aggregate = None
             answer_parts = []
@@ -776,9 +799,12 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
                 if attempted_tools and failed_tools:
                     raise _IncompleteBuild('The requested build is blocked by tool errors. No requested project change succeeded; review the tool errors and correct the project or requirements.')
                 raise _IncompleteBuild('The agent returned advice without executing the requested build. No changes were made. Retry with confirmed requirements and an explicit build instruction.')
-            if project_id and approval_id and (build_requested or any(successful_tools.get(name) for name in _CONFIRM_FIRST)):
-                _get_feasibility().validate_approval(_get_service(), project_id, approval_id)
-                for check in ('read_project', 'validate_circuit'):
+            if firmware_requested and not any(successful_tools.get(name) for name in ('edit_firmware', 'generate_firmware')):
+                raise _IncompleteBuild('The requested firmware change did not succeed. Review the tool errors; no firmware update was verified.')
+            if project_id and (approval_id or firmware_requested) and (build_requested or any(successful_tools.get(name) for name in _CONFIRM_FIRST)):
+                if approval_id:
+                    _get_feasibility().validate_approval(_get_service(), project_id, approval_id)
+                for check in (('read_project',) if firmware_requested else ('read_project', 'validate_circuit')):
                     if (check == 'read_project' and readback_revision == project_revision
                             or check == 'validate_circuit' and validation_revision == project_revision):
                         continue
@@ -787,10 +813,12 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
                     tool_calls += 1
                     step_id = f'tool_{uuid4().hex}'
                     active[step_id] = check
-                    writer({'type': 'step_start', 'id': step_id, 'label': check.replace('_', ' ').capitalize(), 'command': check + '({})'})
+                    writer({'type': 'step_start', 'id': step_id, 'label': check.replace('_', ' ').capitalize(),
+                            'command': check + '({})', 'toolName': check, 'args': {}})
                     checked = await execute(check, {})
                     invalid = _failed(checked) or (check == 'validate_circuit' and (checked.get('valid') is not True or checked.get('errors')))
-                    writer({'type': 'step_end', 'id': step_id, 'status': 'error' if invalid else 'success', 'output': json.dumps(checked, ensure_ascii=False)})
+                    writer({'type': 'step_end', 'id': step_id, 'status': 'error' if invalid else 'success',
+                            'output': json.dumps(checked, ensure_ascii=False), 'result': checked})
                     active.pop(step_id, None)
                     if invalid:
                         if verification_corrections < 2:
@@ -824,7 +852,8 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
             args = call.get('args', {})
             active[step_id] = name
             writer({'type': 'step_start', 'id': step_id, 'label': name.replace('_', ' ').capitalize(),
-                    'command': name + '(' + json.dumps(_public(args), ensure_ascii=False) + ')'})
+                    'command': name + '(' + json.dumps(_public(args), ensure_ascii=False) + ')',
+                    'toolName': name, 'args': _public(args)})
             try:
                 if call_id in used_call_ids:
                     raise ValueError('Duplicate tool call ID refused; mutations are never replayed.')
@@ -851,7 +880,7 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
                 failed = True
             if failed:
                 failed_tools[name] = failed_tools.get(name, 0) + 1
-            writer({'type': 'step_end', 'id': step_id, 'status': 'error' if failed else 'success', 'output': output})
+            writer({'type': 'step_end', 'id': step_id, 'status': 'error' if failed else 'success', 'output': output, 'result': result})
             active.pop(step_id, None)
             if name == 'ask_project_questions' and not failed:
                 writer({'type': 'questions', **result})
@@ -912,8 +941,13 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
         emergency_stop = bool(project_id and re.fullmatch(
             r'\s*(?:(?:please|emergency)\s+)?(?:stop|halt)\s+(?:the\s+)?(?:simulation|simulator)(?:\s+(?:now|please))?[.!]?\s*', user_text, re.I
         ))
-        build_requested = bool(project_id and not emergency_stop and (_build_intent(user_text) or approval_id or revising))
-        compile_requested = bool(build_requested and ('compile_firmware' in approved_plan['operations'] if approved_plan else re.search(r'\bcompile\b', user_text, re.I)))
+        if project_id and confirmed and not revising and _firmware_intent(user_text):
+            selected_board = _get_service().get_project(project_id).get('board')
+            firmware_requested = (selected_board not in (None, 'unselected', 'none')
+                                  and requirements.get('board', selected_board) in (selected_board, 'ai_choose'))
+        build_requested = bool(project_id and not emergency_stop and (_build_intent(user_text) or firmware_requested or approval_id or revising))
+        compile_text = re.sub(r'\b(?:do not|don\'t|never|without)\b[^.;\n]*', '', user_text, flags=re.I) if firmware_requested else user_text
+        compile_requested = bool(build_requested and ('compile_firmware' in approved_plan['operations'] if approved_plan and not firmware_requested else re.search(r'\bcompile\b', compile_text, re.I)))
         needs_questions = build_requested and not confirmed
         tool_limit = _bounded(max_tool_calls, MAX_TOOL_CALLS, 100)
         model_limit = _bounded(max_model_calls, MAX_MODEL_CALLS, 80)
@@ -923,7 +957,7 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
             messages.append(SystemMessage(content='Stop the current simulation with stop_simulation now. This safety stop needs no requirements questions or feasibility review. Report only the actual browser acknowledgement or blocking error.'))
         if revising:
             messages.append(SystemMessage(content='The user chose Change the design. Ask new project-specific MCQs to resolve these actual limitations: ' + json.dumps(assessment.get('issues', [])) + '. Preserve the original goal from conversation history and the selected board. Offer supported alternatives or Let AI choose. Do not repeat the same feasibility review, place parts, or write firmware before revised answers.'))
-        if build_requested and confirmed and hasattr(_get_service(), 'catalog'):
+        if build_requested and confirmed and not firmware_requested and hasattr(_get_service(), 'catalog'):
             from backend.example_requirements import search_example_requirements, get_example_reference
             reference_query = next((message.content for message in history if isinstance(message, HumanMessage) and _build_intent(message.content) and not message.content.startswith('Project requirements confirmed:')), user_text)[:200]
             matches = search_example_requirements(reference_query, 2, board=selected_board if selected_board not in (None,'unselected','none') else None)
@@ -949,11 +983,18 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
         if approved_plan:
             messages.append(SystemMessage(content='Server-authorized feasibility plan: ' + json.dumps(approved_plan, ensure_ascii=False)
                                           + '\nExecute only these parts and operations. Read the current revision first; report limitations honestly.'))
-        elif confirmed and project_id and not emergency_stop:
+        elif confirmed and project_id and not emergency_stop and not firmware_requested:
             messages.append(SystemMessage(content='Feasibility approval is required. Read the current project and assess the complete actual intended plan before any placement, firmware change, compilation or runtime tool.'))
         if needs_questions:
             messages.append(SystemMessage(content='This is an initial project build request without confirmed requirements. '
                                           'Call ask_project_questions with exactly 10 useful MCQs now; non-board questions are optional. No hardware changes may run.'))
+        if firmware_requested:
+            messages.append(SystemMessage(content='This is a targeted firmware update on an existing confirmed project, not a new build. '
+                                          'Read_project and read_firmware first, preserve all components, board pins and wires, then edit_firmware or generate_firmware. '
+                                          'Do not restart requirements questions, example-based building, feasibility assessment, placement or wiring. '
+                                          'Any supplied approval still restricts operations and revisions. Compile only if requested or needed to verify this edit; '
+                                          'compilation validates the circuit and must produce a current artifact. Do not start simulation. '
+                                          'Report the exact firmware change, unchanged circuit, and what was compiled or not run; omit new physical assembly guidance.'))
         # Disable provider transport retries without mutating a shared parent model.
         if hasattr(model, 'max_retries') and hasattr(model, 'model_copy'):
             updates = {'max_retries': 0}
@@ -987,7 +1028,8 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
         else:
             detail = 'Agent time limit reached.' if reason == 'timeout' else str(error)
         for step_id in active:
-            yield {'type': 'step_end', 'id': step_id, 'status': 'error', 'output': detail}
+            yield {'type': 'step_end', 'id': step_id, 'status': 'error', 'output': detail,
+                   'result': {'status': 'error', 'error': detail}}
         yield {'type': 'text', 'channel': 'narration', 'text': detail}
     except _InvalidRequirements as error:
         status = 'error'
@@ -1006,7 +1048,8 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
         reason = 'model_error'
         detail = _provider_error(error)
         for step_id in active:
-            yield {'type': 'step_end', 'id': step_id, 'status': 'error', 'output': detail}
+            yield {'type': 'step_end', 'id': step_id, 'status': 'error', 'output': detail,
+                   'result': {'status': 'error', 'error': detail}}
         yield {'type': 'text', 'channel': 'narration', 'text': detail}
     if paused and status == 'success':
         if needs_questions:

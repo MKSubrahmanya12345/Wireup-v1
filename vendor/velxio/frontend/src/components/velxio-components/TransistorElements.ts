@@ -32,10 +32,10 @@
 // Custom properties inherit THROUGH the shadow boundary, so reading them
 // from the SVG needs no JavaScript and no re-render: flipping the theme
 // repaints these elements on its own. Values live in tokens/colors.css.
-const STROKE = 'var(--color-symbol-ink)'; // primary symbol strokes (base bar, channel)
-const LEAD = 'var(--color-symbol-lead)'; // pin leads
-const LABEL = 'var(--color-symbol-label)'; // pin letters / part number
-const BODY = 'var(--color-symbol-body)'; // optional body-circle outline
+const STROKE = 'var(--color-symbol-ink, #30343b)'; // primary symbol strokes (base bar, channel)
+const LEAD = 'var(--color-symbol-lead, #4b515b)'; // pin leads
+const LABEL = 'var(--color-symbol-label, #30343b)'; // pin letters / part number
+const BODY = 'var(--color-symbol-body, #626975)'; // optional body-circle outline
 const STYLE = ':host{display:inline-block;line-height:0}';
 
 function threePinInfo(pins: Array<{ name: string; x: number; y: number; number: number }>) {
@@ -60,7 +60,7 @@ function bjtSvg(arrowDir: 'npn' | 'pnp', text: string): string {
 
   return `
     <style>${STYLE}</style>
-    <svg width="72" height="72" xmlns="http://www.w3.org/2000/svg">
+    <svg width="72" height="84" xmlns="http://www.w3.org/2000/svg">
       <!-- Body circle (clean outline, no fill — TO-92 hint) -->
       <circle cx="34" cy="36" r="22" fill="none" stroke="${BODY}" stroke-width="1.2"/>
       <!-- Base lead + bar -->
@@ -120,7 +120,7 @@ function mosfetSvg(polarity: 'nmos' | 'pmos', text: string): string {
 
   return `
     <style>${STYLE}</style>
-    <svg width="72" height="72" xmlns="http://www.w3.org/2000/svg">
+    <svg width="72" height="84" xmlns="http://www.w3.org/2000/svg">
       <!-- Body circle (clean outline only) -->
       <circle cx="34" cy="36" r="22" fill="none" stroke="${BODY}" stroke-width="1.2"/>
       <!-- Gate lead and gate plate -->

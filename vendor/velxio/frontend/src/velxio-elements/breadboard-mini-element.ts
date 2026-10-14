@@ -20,8 +20,10 @@ const SCALE = 4 / 3;
 const F_PITCH = 7.2;
 const COLS = 17;
 
-/* Fritzing miniBreadboard.svg hole grid: column 1 at x=11.82; rows A-J at
- * y=19.86..99.06 (A topmost — same orientation as the wokwi letters). */
+/* Socket coordinates precede the SVG group's translate(-4.5, -9).
+ * A is topmost, with the same orientation as the wokwi letters. */
+const F_SOCKET_X = -4.5;
+const F_SOCKET_Y = -9;
 const F_GRID_X0 = 11.82;
 const F_ROW_Y: Record<string, number> = {
   a: 19.86, b: 27.06, c: 34.26, d: 41.46, e: 48.66,
@@ -45,12 +47,12 @@ function buildPins(): BreadboardMiniPin[] {
   const pins: BreadboardMiniPin[] = [];
   let n = 1;
   for (let col = 1; col <= COLS; col++) {
-    const x = (F_GRID_X0 + (col - 1) * F_PITCH) * SCALE;
+    const x = (F_GRID_X0 + (col - 1) * F_PITCH + F_SOCKET_X) * SCALE;
     for (const row of ['a', 'b', 'c', 'd', 'e'] as const) {
-      pins.push({ name: `${col}t.${row}`, x, y: F_ROW_Y[row] * SCALE, number: n++, signals: [] });
+      pins.push({ name: `${col}t.${row}`, x, y: (F_ROW_Y[row] + F_SOCKET_Y) * SCALE, number: n++, signals: [] });
     }
     for (const row of ['f', 'g', 'h', 'i', 'j'] as const) {
-      pins.push({ name: `${col}b.${row}`, x, y: F_ROW_Y[row] * SCALE, number: n++, signals: [] });
+      pins.push({ name: `${col}b.${row}`, x, y: (F_ROW_Y[row] + F_SOCKET_Y) * SCALE, number: n++, signals: [] });
     }
   }
   return pins;
@@ -77,7 +79,7 @@ function buildFallbackSvg(): string {
   const parts: string[] = [
     `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg">`,
     `<rect x="0" y="0" width="${w}" height="${h}" rx="5" fill="#ffffff" stroke="#d8d4cc"/>`,
-    `<rect x="3" y="${59.46 * SCALE - 7}" width="${w - 6}" height="14" rx="2" fill="#efece6"/>`,
+    `<rect x="3" y="${(59.46 + F_SOCKET_Y) * SCALE - 7}" width="${w - 6}" height="14" rx="2" fill="#efece6"/>`,
   ];
   for (const p of PINS) {
     parts.push(

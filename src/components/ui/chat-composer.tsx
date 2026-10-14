@@ -2,12 +2,13 @@ import { useMemo, useRef } from 'react'
 import { Cable, Cpu, GitCompare, Lightbulb } from 'lucide-react'
 import { AiPromptInput } from './ai-prompt-input'
 import type { AiModel } from './ai-prompt-input'
+import { modelOptionKey } from '@/lib/model-selection'
 import type { ModelOption, ModelProvider } from '@/lib/model-selection'
 
 type Props = {
   value: string; onChange: (value: string) => void
   onSend: (text?: string) => void; onStop: () => void; busy: boolean
-  provider?: ModelProvider; models?: ModelOption[]; onProviderChange?: (provider: ModelProvider) => void; compact?: boolean
+  provider?: ModelProvider; models?: ModelOption[]; selectionKey?: string; onModelChange?: (key: string) => void; compact?: boolean
 }
 
 const quickPrompts = [
@@ -26,7 +27,7 @@ const placeholders = [
 
 type SpeechRecognitionLike = { continuous: boolean; interimResults: boolean; lang: string; onresult: (event: { resultIndex: number; results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }> }) => void; onerror: () => void; start: () => void; stop: () => void }
 
-export function ChatComposer({ value, onChange, onSend, onStop, busy, provider, models, onProviderChange, compact = false }: Props) {
+export function ChatComposer({ value, onChange, onSend, onStop, busy, models, selectionKey, onModelChange, compact = false }: Props) {
   const fileInput = useRef<HTMLInputElement>(null)
   const recognition = useRef<SpeechRecognitionLike | null>(null)
   const transcript = useRef('')
@@ -34,9 +35,9 @@ export function ChatComposer({ value, onChange, onSend, onStop, busy, provider, 
   // Map the backend's health-checked providers onto the selector; unconfigured
   // providers stay visible but disabled, with the missing key called out.
   const aiModels = useMemo<AiModel[]>(() => (models ?? []).map(option => ({
-    id: option.id,
+    id: modelOptionKey(option),
     label: !option.model || /^Configured /.test(option.model) ? option.label : option.model.split('/').pop() || option.model,
-    description: `${option.label} · ${option.model}${option.configured ? '' : ' — add its API key to .env to enable'}`,
+    description: `${option.model}${option.configured ? '' : ' — API key required'}`,
     disabled: !option.configured,
   })), [models])
 
@@ -98,8 +99,8 @@ export function ChatComposer({ value, onChange, onSend, onStop, busy, provider, 
         className={compact ? 'wireup-prompt-compact' : undefined}
         placeholders={placeholders}
         models={aiModels}
-        modelSelection={provider ? { id: provider } : undefined}
-        onModelSelectionChange={selection => onProviderChange?.(selection.id as ModelProvider)}
+        modelSelection={selectionKey ? { id: selectionKey } : undefined}
+        onModelSelectionChange={selection => onModelChange?.(selection.id)}
         customActions={quickPrompts.map(prompt => ({ ...prompt, onSelect: () => onChange(value.trim() ? `${value.trimEnd()} ${prompt.label}` : prompt.label) }))}
         onUploadFile={() => fileInput.current?.click()}
         getDictationTranscript={getDictationTranscript}

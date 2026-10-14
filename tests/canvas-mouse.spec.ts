@@ -1,0 +1,25 @@
+import { expect, test } from '@playwright/test'
+for (const width of [1440, 390]) test(`mouse selection and wheel zoom with no breadboard toolbar at ${width}px`, async ({ page, request }) => {
+ const project = await (await request.post('/api/hardware/projects', { data: { name: 'Mouse canvas verification', board: 'arduino-uno' } })).json()
+ try {
+  await page.setViewportSize({ width, height: 900 })
+  await page.goto(`/project/${project.id}`, { waitUntil: 'domcontentloaded' })
+  const canvas = page.getByRole('region', { name: 'Circuit canvas', exact: true })
+  await expect(canvas).toBeVisible({ timeout: 30000 })
+  await expect(page.getByRole('button', { name: 'Use breadboard', exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Select board', exact: true }).click()
+  await expect(page.getByRole('toolbar', { name: 'Actions for board', exact: true })).toBeVisible()
+  const rect = await canvas.boundingBox()
+  await page.mouse.move(rect!.x + rect!.width / 2, rect!.y + rect!.height / 2)
+  await page.mouse.wheel(0, -200)
+  await expect(page.getByRole('button', { name: 'Reset zoom', exact: true })).not.toHaveText('100%')
+  const enlarged = parseInt(await page.getByRole('button', { name: 'Reset zoom', exact: true }).innerText())
+  expect(enlarged).toBeGreaterThan(100)
+  await page.mouse.wheel(0, 300)
+  await expect.poll(async () => parseInt(await page.getByRole('button', { name: 'Reset zoom', exact: true }).innerText())).toBeLessThan(enlarged)
+  await page.getByRole('button', { name: 'Reset zoom', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Reset zoom', exact: true })).toHaveText('100%')
+  await page.getByRole('button', { name: 'Simulation', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Run', exact: true })).toBeVisible()
+ } finally { await page.goto('/', { waitUntil: 'domcontentloaded' }); await request.delete(`/api/hardware/projects/${project.id}`) }
+})

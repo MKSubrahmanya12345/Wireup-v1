@@ -1,8 +1,10 @@
 import asyncio
 from contextlib import aclosing, asynccontextmanager
+import hashlib
 import json
 import os
 from pathlib import Path
+from threading import Lock
 from typing import Literal
 
 from dotenv import load_dotenv
@@ -47,6 +49,7 @@ class ChatRequest(BaseModel):
     project_answers: dict[str, str] | None = None
     approval: FeasibilityApproval | None = None
     provider: Literal['groq', 'nvidia', 'bedrock', 'azure'] = 'groq'
+    model: str | None = Field(default=None, min_length=1, max_length=256, pattern=r'^[^\s\x00-\x1f]+$')
 
     @field_validator('project_answers')
     @classmethod
@@ -90,11 +93,44 @@ def event(kind: str, **values) -> str:
 
 
 def create_app(model_factory=None, api_key=None):
+    model_cache = {}
+    model_lock = Lock()
+    model_loop = None
+
+    def cached_model(provider, key, model_name, loop):
+        nonlocal model_loop
+
+        def signature():
+            # SDKs also read implicit proxy, endpoint, and credential settings.
+            settings = json.dumps((key, model_name, sorted(os.environ.items())))
+            return build_model, hashlib.sha256(settings.encode()).digest()
+
+        with model_lock:
+            # Async provider transports must not cross event loops.
+            if model_loop is not loop:
+                model_cache.clear()
+                model_loop = loop
+            current = signature()
+            cached = model_cache.get(provider)
+            if cached is not None and cached[0] == current:
+                return cached[1]
+            model_cache.pop(provider, None)
+            model = build_model(provider, key, model_name)
+            if signature() == current:
+                model_cache[provider] = (current, model)
+            return model
+
     @asynccontextmanager
     async def lifespan(application):
-        yield
-        from backend.remote_projects import remote_projects
-        await remote_projects.shutdown()
+        nonlocal model_loop
+        try:
+            yield
+        finally:
+            with model_lock:
+                model_cache.clear()
+                model_loop = None
+            from backend.remote_projects import remote_projects
+            await remote_projects.shutdown()
 
     application = FastAPI(title='WireUp LangChain API', lifespan=lifespan)
     application.add_middleware(SecurityMiddleware)
@@ -108,6 +144,12 @@ def create_app(model_factory=None, api_key=None):
         key = api_key if api_key is not None else os.getenv('GROQ_API_KEY', '')
         return {'configured': bool(key.strip()), 'model': os.getenv('GROQ_MODEL', 'openai/gpt-oss-120b'), 'providers': model_options()}
 
+    @application.get('/api/models')
+    async def models():
+        reload_settings()
+        from backend.model_discovery import discover_models
+        return await discover_models()
+
     @application.post('/api/chat')
     async def chat(payload: ChatRequest, request: Request):
         if not local_connection(request):
@@ -119,6 +161,7 @@ def create_app(model_factory=None, api_key=None):
         if not key.strip() and not (provider == 'bedrock' and bedrock_configured()):
             raise HTTPException(503, f'Add {key_name} to .env, then retry to enable {provider.upper()} replies.')
         model_name = os.getenv('AZURE_MODEL_ID', 'gpt-6.1-sol') if provider == 'azure' else os.getenv('BEDROCK_MODEL_ID', 'moonshotai.kimi-k2.5') if provider == 'bedrock' else os.getenv('NVIDIA_MODEL', 'z-ai/glm-5.3') if provider == 'nvidia' else os.getenv('GROQ_MODEL', 'openai/gpt-oss-120b')
+        model_name = payload.model or model_name
         selected = []
         count = 0
         for message in reversed(payload.messages):
@@ -139,10 +182,10 @@ def create_app(model_factory=None, api_key=None):
                 history.append(cls(content=message.content))
 
         async def generate():
-            yield event('text', channel='narration', text=f'Connecting to {provider.upper()} model {model_name}…\n')
+            yield event('heartbeat')
             try:
                 async with asyncio.timeout(20):
-                    model = await asyncio.to_thread(application.state.model_factory or build_model, *(() if application.state.model_factory else (provider, key, model_name)))
+                    model = await asyncio.to_thread(application.state.model_factory) if application.state.model_factory else await asyncio.to_thread(cached_model, provider, key, model_name, asyncio.get_running_loop())
             except Exception:
                 yield event('text', channel='narration', text=f'{provider.upper()} model initialization failed or timed out. Check its API settings and retry.')
                 yield event('done', status='error')

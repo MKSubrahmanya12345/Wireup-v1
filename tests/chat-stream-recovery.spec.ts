@@ -18,7 +18,7 @@ for (const width of [1440, 390]) {
     await page.getByRole('textbox', { name: 'Message WireUp' }).fill('Hello')
     await page.getByRole('button', { name: 'Send message', exact: true }).click()
     await expect(page.getByText('A complete response.', { exact: true })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Stop generating', exact: true })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Stop generation', exact: true })).toHaveCount(0)
     await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeVisible()
   })
 }
@@ -35,5 +35,5 @@ test('silent stream ends with a recoverable timeout rather than loading forever'
   await page.getByRole('button', { name: 'Send message', exact: true }).click()
   await expect(page.getByRole('alert')).toContainText('stopped sending updates', { timeout: 55000 })
   await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Stop generating', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Stop generation', exact: true })).toHaveCount(0)
 })
