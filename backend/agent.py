@@ -43,7 +43,7 @@ connected browser and acknowledgement; report unavailable hardware honestly.
 Tool errors are feedback: correct arguments or explain the error, do not blindly
 repeat mutations. No shell execution is available. Give a concise final answer only
 when tools are finished; do not include tool-selection prose in that answer.
-For explicit project build/create/wire/compile requests, DO THE WORK with tools,
+For initial project build/create/wire/compile requests, DO THE WORK with tools,
 not a tutorial, code block, proposed diagram, or advice-only answer. First ask
 exactly 10 project-specific multiple-choice requirements questions using ask_project_questions
 unless this request includes confirmed requirements. Questions must resolve actual
@@ -327,6 +327,108 @@ _FIRMWARE_TOOLS = frozenset({
 })
 
 
+def _existing_project_definition(project):
+    requirements = project.get('requirements')
+    return bool(
+        project.get('revision', 1) > 1 or project.get('history') or project.get('wires')
+        or _existing_components(project)
+        or isinstance(requirements, dict) and requirements.get('status') == 'confirmed'
+    )
+
+
+def _existing_modification_intent(text):
+    if _firmware_intent(text):
+        return True
+    return bool(re.match(
+        r'^\s*(?:(?:please|can you|could you|would you)\s+)?(?:modify|update|change|fix|remove|delete|move|rotate|reposition)\b',
+        text, re.I,
+    ) or re.match(
+        r'^\s*(?:(?:please|can you|could you|would you)\s+)?(?:add|insert|include|place|connect)\b',
+        text, re.I,
+    ) and re.search(r'\b(?:firmware|code|sketch|compile)\b', text, re.I))
+
+
+def _firmware_change_needs_clarification(text):
+    text = re.sub(r'^\s*(?:(?:please|can you|could you|would you)\s+)?', '', text, flags=re.I)
+    text = re.sub(r'[.!?]+\s*$', '', text).strip()
+    return bool(re.fullmatch(
+        r'(?:edit|change|update|fix|modify|replace)\s+(?:(?:the|my|this|current|existing)\s+)?(?:firmware|code|sketch|software)',
+        text, re.I,
+    ))
+
+
+def _targeted_edit_intent(text):
+    text = text.strip().lower()
+    match = re.fullmatch(
+        r'(?:(?:please|can you|could you|would you)\s+)?'
+        r'(remove|delete|move|reposition|rotate|modify|change|update|set)\s+(.+?)[.!]?\s*', text,
+    )
+    if not match:
+        return None
+    action, target = match.groups()
+    # Mixed design requests must keep the full topology review.
+    checked_target = target
+    if action in ('remove', 'delete'):
+        checked_target = re.sub(r'\s+from\s+(?:(?:the|this|my|current|existing)\s+)*(?:circuit|project)\s*$', '', checked_target)
+        checked_target = re.sub(r'\bwires?\b', '', checked_target)
+    if re.search(r'\b(?:add|build|create|make|assemble|replace|switch|use|wire|rewire|connect|'
+                 r'generate|compile|run|simulate|firmware|code|sketch|board|microcontroller|'
+                 r'design|redesign|requirements|setup|plan|circuit|pins?|if|unless|not|never|instead|then)\b', checked_target):
+        return None
+    if re.search(r'\b(?:remove|delete|move|reposition|rotate|modify|change|update|set|keep|except|leave|preserve)\b', target):
+        return None
+    if action in ('remove', 'delete'):
+        return 'remove_wire' if re.search(r'\b(?:wires?|connections?|cables?)\b', target) else 'remove_component'
+    if action in ('move', 'reposition', 'rotate'):
+        return 'move_component'
+    if re.search(r'\b(?:propert(?:y|ies)|value|colou?r|resistance|capacitance|inductance|voltage|'
+                 r'current|brightness|frequency|duty|temperature|humidity|state|label)\b', target):
+        return 'modify_property'
+    return None
+
+
+def _major_design_change(text):
+    text = re.sub(r'\b(?:do not|don\'t|never|without)\b[^.;\n]*', '', text, flags=re.I)
+    return bool(re.search(r'\b(?:start over|start from scratch|new project|redesign|rebuild|change (?:the )?(?:project goal|project purpose|requirements)|(?:change|replace|switch|swap) (?:the |my |our )?(?:board|microcontroller))\b', text, re.I))
+
+
+def _addition_intent(text):
+    return bool(re.match(r'^\s*(?:(?:please|can you|could you|would you)\s+)?(?:add|insert|include|place|connect)\b', text, re.I)) and not _major_design_change(text) and not re.search(r'\b(?:board|microcontroller|new project|redesign|replace|remove|delete|firmware|code|sketch|compile)\b', text, re.I)
+
+
+_ADDITION_TOOLS = frozenset({
+    'read_project', 'read_firmware', 'search_components', 'assess_project_feasibility',
+    'add_component', 'wire_circuit', 'validate_circuit', 'check_connections', 'calculator',
+})
+
+
+def _existing_components(project):
+    from backend.hardware import BOARD_ALIASES, BOARD_CONFIG
+    return [part for part in project.get('components', [])
+            if part.get('id') != 'board'
+            and BOARD_ALIASES.get(part.get('type', '').removeprefix('wokwi-'), part.get('type')) not in BOARD_CONFIG]
+
+
+def _edit_targets(text, project, intent):
+    items = project.get('wires', []) if intent == 'remove_wire' else _existing_components(project)
+
+    def mentioned(value):
+        return bool(value and re.search(r'(?<![\w-])' + re.escape(value) + r'(?![\w-])', text, re.I))
+
+    exact = {item['id'] for item in items if mentioned(item['id'])}
+    if exact:
+        return exact
+    matches = {item['id'] for item in items if intent != 'remove_wire'
+               and (mentioned(item.get('type', '')) or mentioned(item.get('type', '') + 's'))}
+    return matches if len(matches) == 1 or re.search(r'\ball\b', text, re.I) else set()
+
+
+_FOLLOWUP_READ_TOOLS = frozenset({
+    'read_project', 'read_firmware', 'read_compiler_errors', 'search_components',
+    'validate_circuit', 'check_connections', 'calculator',
+})
+
+
 def _bounded(value, default, ceiling):
     if value is None:
         return default
@@ -490,6 +592,14 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
     paused = False
     build_requested = False
     firmware_requested = False
+    operation_mode: Literal['create_project', 'modify_project', 'ask_clarification'] | None = None
+    clarification_allowed = False
+    targeted_edit = None
+    targeted_operation = None
+    followup_tools = None
+    addition_requested = False
+    major_change = False
+    read_requested = False
     compile_requested = False
     emergency_stop = False
     successful_tools: dict[str, int] = {}
@@ -508,6 +618,16 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
         nonlocal project_read, project_revision, paused, selected_board, board_unselected
         nonlocal assessment, approval_id, approved_plan, compile_attempts, current_compile, compile_requested
         nonlocal readback_revision, validation_revision
+        if addition_requested:
+            if name not in _ADDITION_TOOLS or name == 'check_connections' and args.get('repair', False):
+                raise ValueError('This is an addition to the existing circuit. Preserve its board, components and firmware; perform only the requested addition and connections.')
+            if name == 'add_component':
+                from backend.hardware import BOARD_ALIASES, BOARD_CONFIG
+                kind = args.get('type', '').removeprefix('wokwi-')
+                if BOARD_ALIASES.get(kind, kind) in BOARD_CONFIG:
+                    raise ValueError('A routine component addition cannot replace the project board. Board changes require project setup.')
+        if followup_tools is not None and (name not in followup_tools or name == 'check_connections' and args.get('repair', False)):
+            raise ValueError('This follow-up permits only reading and the requested targeted operation. No setup, assessment, or unrelated changes are allowed.')
         if firmware_requested and (name not in _FIRMWARE_TOOLS or name == 'check_connections' and args.get('repair', False)):
             raise ValueError('This request is firmware-only. Preserve the current circuit; topology changes require confirmed requirements and feasibility review.')
         if name == 'ask_project_questions':
@@ -518,10 +638,12 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
                     raise ValueError('Option IDs must be unique within a question.')
             if confirmed:
                 raise ValueError('Requirements are already confirmed. Execute the requested build with hardware tools.')
+            if not needs_questions:
+                raise ValueError('Requirements questions are only available for initial builds or explicit design revisions. Ask any follow-up clarification in normal text.')
             questions = args['questions']
             if project_id:
                 selected_board = _get_service().get_project(project_id).get('board')
-                board_unselected = selected_board in (None, 'unselected', 'none')
+                board_unselected = selected_board in (None, 'unselected', 'none') or bool(major_change and re.search(r'\b(?:board|microcontroller)\b', user_text, re.I))
             if project_id and board_unselected:
                 board_questions = [question for question in questions if question['id'] == 'board']
                 board_question = board_questions[0] if board_questions else _board_question(user_text)
@@ -564,7 +686,18 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
             raise ValueError('Call read_project successfully before mutating or compiling the current project.')
         if (name in _CONFIRM_FIRST or repairing_connections) and not confirmed:
             raise ValueError('User-confirmed requirements are required before project mutations, compilation, or simulation start. Call ask_project_questions and wait for answers.')
-        if confirmed and project_id and not approval_id and not firmware_requested and name not in _ASSESSMENT_TOOLS and name != 'stop_simulation':
+        if targeted_edit and name == targeted_operation:
+            actual = _get_service().get_project(project_id)
+            _get_service().authorize_runtime(actual, runtime_token)
+            if actual.get('board') != selected_board:
+                raise ValueError('The project board changed. Read the current project before editing.')
+            if args['id'] not in _edit_targets(user_text, actual, targeted_edit):
+                raise ValueError('The requested target is missing or ambiguous. Ask which existing component or wire in normal text; do not guess.')
+            if targeted_edit == 'move_component' and ('properties' in args or not any(key in args for key in ('x', 'y', 'rotation'))):
+                raise ValueError('A move requires a position or rotation change, not component properties.')
+            if targeted_edit == 'modify_property' and (not args.get('properties') or any(key in args for key in ('x', 'y', 'rotation'))):
+                raise ValueError('A property edit requires nonempty properties and may not move or rotate components.')
+        if confirmed and project_id and not approval_id and not firmware_requested and followup_tools is None and name not in _ASSESSMENT_TOOLS and name != 'stop_simulation':
             raise ValueError('Assess the complete project plan and obtain approval before any placement, mutation, compilation, or runtime operation.')
         if name == 'search_example_requirements':
             from backend.example_requirements import search_example_requirements
@@ -592,7 +725,7 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
                 approved_plan = None
                 raise ValueError('The proposed design contains incompatible devices. Select only the compatible choices from the setup answers; no changes were authorized. Details: ' + json.dumps(assessment.get('issues', [])))
             return assessment
-        if (name in _CONFIRM_FIRST or repairing_connections) and (approval_id or not firmware_requested):
+        if (name in _CONFIRM_FIRST or repairing_connections) and (approval_id or not (firmware_requested or targeted_edit)):
             if not approval_id:
                 raise ValueError('Complete the feasibility review before changing the project.')
             _get_feasibility().check_operation(_get_service(), project_id, approval_id, name, args)
@@ -640,6 +773,7 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
         attempted_tools[name] = attempted_tools.get(name, 0) + 1
         previous_revision = project_revision
         if name == 'compile_firmware':
+            compile_requested = True
             compile_attempts += 1
             current_compile = None
         if name == 'calculator' and not project_id:
@@ -668,14 +802,15 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
             if name == 'read_project':
                 project_read = True
                 selected_board = result.get('board') if isinstance(result, dict) else None
-                board_unselected = selected_board in (None, 'unselected', 'none')
+                board_unselected = selected_board in (None, 'unselected', 'none') or bool(major_change and re.search(r'\b(?:board|microcontroller)\b', user_text, re.I))
             elif name == 'add_component' and isinstance(result, dict) and result.get('board') in _board_catalog():
                 selected_board = result['board']
                 board_unselected = False
             if isinstance(result, dict) and isinstance(result.get('revision'), int) and (name == 'read_project' or name in _MUTATIONS):
                 project_revision = result['revision']
             connections_changed = name == 'check_connections' and result.get('changed') is True
-            if name in _MUTATIONS or connections_changed:
+            mutation_changed = name in _MUTATIONS and project_revision != previous_revision
+            if mutation_changed or connections_changed:
                 if approval_id:
                     _get_feasibility().advance(_get_service(), project_id, approval_id, previous_revision, project_revision)
                 readback_revision = None
@@ -699,7 +834,7 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
                           'modify_component': 'componentsModified', 'connect_wire': 'wiresAdded',
                           'remove_wire': 'wiresRemoved', 'generate_firmware': 'firmwareWrites',
                           'edit_firmware': 'firmwareWrites'}.get(name)
-            if change_key:
+            if change_key and mutation_changed:
                 changes[change_key] += 1
         return result
 
@@ -729,17 +864,25 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
         require_tools = needs_questions or (build_requested and not (
             any(successful_tools.get(name) for name in _MUTATIONS) or compiled_current_revision()
         ))
+        if firmware_requested:
+            firmware_written = any(successful_tools.get(name) for name in ('edit_firmware', 'generate_firmware'))
+            require_tools = not project_read or (not clarification_allowed and not firmware_written) or (compile_requested and not compiled_current_revision())
         available = tools
         if emergency_stop:
             available = [tool for tool in tools if tool.name == 'stop_simulation']
             require_tools = not successful_tools.get('stop_simulation') and not failed_tools.get('stop_simulation')
         elif needs_questions:
             available = [tool for tool in tools if tool.name == 'ask_project_questions']
+        elif followup_tools is not None:
+            available = [tool for tool in tools if tool.name in followup_tools]
+            require_tools = bool(targeted_edit and not project_read)
         elif firmware_requested:
             available = [tool for tool in tools if tool.name in _FIRMWARE_TOOLS]
         elif confirmed and project_id and not approval_id:
             available = [tool for tool in tools if tool.name in _ASSESSMENT_TOOLS]
             require_tools = True
+        if addition_requested:
+            available = [tool for tool in available if tool.name in _ADDITION_TOOLS]
         if (approved_plan and approval_id or firmware_requested) and not emergency_stop:
             excluded = {'assess_project_feasibility', 'ask_project_questions'}
             from backend.hardware import BOARD_CONFIG
@@ -795,16 +938,26 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
         if not message.tool_calls and not message.invalid_tool_calls:
             if needs_questions:
                 raise _IncompleteBuild('No requirements questions were produced. Submit the build request again; the agent must ask structured questions before making changes.')
-            if build_requested and not any(successful_tools.get(name) for name in _CONFIRM_FIRST):
+            if targeted_edit:
+                if not project_read:
+                    raise _IncompleteBuild('Read the current project before performing or clarifying this targeted edit.')
+                if not successful_tools.get(targeted_operation) and failed_tools:
+                    raise _IncompleteBuild('The requested targeted edit was blocked. No requested change succeeded; review the tool errors.')
+            if firmware_requested and not any(successful_tools.get(name) for name in ('edit_firmware', 'generate_firmware')):
+                if clarification_allowed and project_read and not failed_tools:
+                    pass
+                elif attempted_tools and failed_tools:
+                    raise _IncompleteBuild('The firmware modification failed. No source was overwritten. Review the reported error and retry after applying its recovery action.')
+                else:
+                    raise _IncompleteBuild('The requested firmware change did not succeed. No firmware was saved or compiled; provide the missing behavior details and retry.')
+            elif build_requested and not targeted_edit and not any(successful_tools.get(name) for name in _CONFIRM_FIRST):
                 if attempted_tools and failed_tools:
                     raise _IncompleteBuild('The requested build is blocked by tool errors. No requested project change succeeded; review the tool errors and correct the project or requirements.')
                 raise _IncompleteBuild('The agent returned advice without executing the requested build. No changes were made. Retry with confirmed requirements and an explicit build instruction.')
-            if firmware_requested and not any(successful_tools.get(name) for name in ('edit_firmware', 'generate_firmware')):
-                raise _IncompleteBuild('The requested firmware change did not succeed. Review the tool errors; no firmware update was verified.')
-            if project_id and (approval_id or firmware_requested) and (build_requested or any(successful_tools.get(name) for name in _CONFIRM_FIRST)):
+            if project_id and (approval_id or firmware_requested or targeted_edit) and (build_requested or any(successful_tools.get(name) for name in _CONFIRM_FIRST)):
                 if approval_id:
                     _get_feasibility().validate_approval(_get_service(), project_id, approval_id)
-                for check in (('read_project',) if firmware_requested else ('read_project', 'validate_circuit')):
+                for check in (('read_project',) if firmware_requested or targeted_edit else ('read_project', 'validate_circuit')):
                     if (check == 'read_project' and readback_revision == project_revision
                             or check == 'validate_circuit' and validation_revision == project_revision):
                         continue
@@ -911,11 +1064,17 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
             if len(payload) > 24000:
                 raise ValueError('Confirmed requirements are too large.')
             requirements = json.loads(payload)
+        current_project = _get_service().get_project(project_id) if project_id else None
+        saved_requirements = current_project.get('requirements') if current_project else None
+        if requirements is None and isinstance(saved_requirements, dict) and saved_requirements.get('status') == 'confirmed':
+            requirements = saved_requirements.get('answers')
         if requirements is not None:
             requirements = _requirements(requirements)
             if 'board' in requirements and requirements['board'] not in ('none', 'ai_choose') and requirements['board'] not in _board_catalog():
                 raise _InvalidRequirements('The board answer must be a canonical catalog board key or none. No changes were made.')
             confirmed = True
+            if project_id and user_text.startswith(prefix) and hasattr(_get_service(), 'confirm_requirements'):
+                _get_service().confirm_requirements(project_id, requirements)
         if approval is not None:
             if not project_id or not confirmed or not isinstance(approval, dict):
                 raise _InvalidRequirements('Approval requires a current project and confirmed requirements.')
@@ -938,17 +1097,65 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
                 raise _InvalidRequirements(_tool_error(error, runtime_token)) from error
             yield {'type': 'feasibility', **assessment}
         revising = bool(assessment and assessment.get('status') == 'revise')
+        major_change = bool(project_id and not approval and not user_text.startswith(prefix) and _major_design_change(user_text))
+        existing_definition = bool(current_project and _existing_project_definition(current_project))
+        if major_change:
+            confirmed = False
+            requirements = None
+            operation_mode = 'create_project'
+        if project_id and not revising and not major_change and _addition_intent(user_text):
+            current = current_project or _get_service().get_project(project_id)
+            if confirmed or existing_definition:
+                addition_requested = True
+                operation_mode = 'modify_project'
+                confirmed = True
+                selected_board = current.get('board')
+                requirements = {**(requirements or {}), 'board': selected_board}
+
         emergency_stop = bool(project_id and re.fullmatch(
             r'\s*(?:(?:please|emergency)\s+)?(?:stop|halt)\s+(?:the\s+)?(?:simulation|simulator)(?:\s+(?:now|please))?[.!]?\s*', user_text, re.I
         ))
-        if project_id and confirmed and not revising and _firmware_intent(user_text):
-            selected_board = _get_service().get_project(project_id).get('board')
+        if project_id and not revising and not major_change and not addition_requested:
+            targeted_edit = _targeted_edit_intent(user_text)
+            read_requested = bool(not _build_intent(user_text) and re.match(
+                r'^\s*(?:(?:please|can you|could you)\s+)?(?:read|show|list|inspect|check|explain|what|how)\b', user_text, re.I,
+            ))
+            if targeted_edit:
+                project = _get_service().get_project(project_id)
+                selected_board = project.get('board')
+                if requirements and requirements.get('board', selected_board) not in (selected_board, 'ai_choose'):
+                    targeted_edit = None
+                else:
+                    confirmed = confirmed or bool(_existing_components(project))
+                    targeted_operation = ('modify_component' if targeted_edit in ('move_component', 'modify_property') else targeted_edit)
+                    followup_tools = frozenset({'read_project', targeted_operation}) if confirmed else frozenset({'read_project'})
+                    requirements = requirements or {}
+            elif read_requested:
+                followup_tools = _FOLLOWUP_READ_TOOLS
+        if project_id and existing_definition and not confirmed and not revising and not major_change and _existing_modification_intent(user_text):
+            confirmed = True
+            selected_board = current_project.get('board')
+            requirements = {'board': selected_board}
+            operation_mode = 'modify_project'
+        if project_id and confirmed and not revising and not targeted_edit and _firmware_intent(user_text):
+            selected_board = (current_project or _get_service().get_project(project_id)).get('board')
             firmware_requested = (selected_board not in (None, 'unselected', 'none')
                                   and requirements.get('board', selected_board) in (selected_board, 'ai_choose'))
-        build_requested = bool(project_id and not emergency_stop and (_build_intent(user_text) or firmware_requested or approval_id or revising))
+            if firmware_requested:
+                operation_mode = 'modify_project'
+                clarification_allowed = _firmware_change_needs_clarification(user_text)
+        build_requested = bool(project_id and not emergency_stop and not read_requested and (_build_intent(user_text) or firmware_requested or targeted_edit or addition_requested or major_change or approval_id or revising))
         compile_text = re.sub(r'\b(?:do not|don\'t|never|without)\b[^.;\n]*', '', user_text, flags=re.I) if firmware_requested else user_text
-        compile_requested = bool(build_requested and ('compile_firmware' in approved_plan['operations'] if approved_plan and not firmware_requested else re.search(r'\bcompile\b', compile_text, re.I)))
-        needs_questions = build_requested and not confirmed
+        compile_opted_out = bool(firmware_requested and re.search(r'\b(?:do not|don\'t|never|without)\s+compile\b', user_text, re.I))
+        compile_requested = bool(build_requested and not targeted_edit and not compile_opted_out and (
+            'compile_firmware' in approved_plan['operations'] if approved_plan and not firmware_requested
+            else re.search(r'\bcompile\b', compile_text, re.I)
+        ))
+        needs_questions = build_requested and not confirmed and not targeted_edit
+        if needs_questions and operation_mode is None:
+            operation_mode = 'create_project'
+        if clarification_allowed:
+            operation_mode = 'ask_clarification'
         tool_limit = _bounded(max_tool_calls, MAX_TOOL_CALLS, 100)
         model_limit = _bounded(max_model_calls, MAX_MODEL_CALLS, 80)
         deadline = _bounded(timeout_seconds, MAX_SECONDS, 300)
@@ -957,7 +1164,7 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
             messages.append(SystemMessage(content='Stop the current simulation with stop_simulation now. This safety stop needs no requirements questions or feasibility review. Report only the actual browser acknowledgement or blocking error.'))
         if revising:
             messages.append(SystemMessage(content='The user chose Change the design. Ask new project-specific MCQs to resolve these actual limitations: ' + json.dumps(assessment.get('issues', [])) + '. Preserve the original goal from conversation history and the selected board. Offer supported alternatives or Let AI choose. Do not repeat the same feasibility review, place parts, or write firmware before revised answers.'))
-        if build_requested and confirmed and not firmware_requested and hasattr(_get_service(), 'catalog'):
+        if build_requested and confirmed and not firmware_requested and not targeted_edit and not addition_requested and hasattr(_get_service(), 'catalog'):
             from backend.example_requirements import search_example_requirements, get_example_reference
             reference_query = next((message.content for message in history if isinstance(message, HumanMessage) and _build_intent(message.content) and not message.content.startswith('Project requirements confirmed:')), user_text)[:200]
             matches = search_example_requirements(reference_query, 2, board=selected_board if selected_board not in (None,'unselected','none') else None)
@@ -971,20 +1178,25 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
         if needs_questions:
             project = _get_service().get_project(project_id)
             selected_board = project.get('board')
-            board_unselected = selected_board in (None, 'unselected', 'none')
+            board_unselected = selected_board in (None, 'unselected', 'none') or bool(major_change and re.search(r'\b(?:board|microcontroller)\b', user_text, re.I))
             messages.append(SystemMessage(content=(
                 'The project has no selected board. Ask board first using canonical board option IDs. Available boards: '
                 + json.dumps([{'id': key, 'label': item['name']} for key, item in _board_catalog().items()])
                 + '. Offer none for an analog circuit. Limit the board choices to six relevant options.'
             ) if board_unselected else 'The project already uses board ' + str(selected_board) + '. Omit the board question.'))
-        if confirmed:
+        if confirmed and requirements:
             messages.append(SystemMessage(content='The user confirmed these project requirements: ' + json.dumps(requirements, ensure_ascii=False)
                                           + '\nAn ai_choose answer delegates that decision to you: choose a supported option, explain it, and include it in the assessed plan. Do not repeat that question. Execute the latest requested project operation with tools. Do not ask requirements questions again.'))
         if approved_plan:
             messages.append(SystemMessage(content='Server-authorized feasibility plan: ' + json.dumps(approved_plan, ensure_ascii=False)
                                           + '\nExecute only these parts and operations. Read the current revision first; report limitations honestly.'))
-        elif confirmed and project_id and not emergency_stop and not firmware_requested:
+        elif confirmed and project_id and not emergency_stop and not firmware_requested and followup_tools is None:
             messages.append(SystemMessage(content='Feasibility approval is required. Read the current project and assess the complete actual intended plan before any placement, firmware change, compilation or runtime tool.'))
+            if operation_mode == 'modify_project':
+                messages.append(SystemMessage(content='This is a modification of an existing project, not new-project setup. Reuse the saved requirements and current revision. '
+                                              'The reviewed plan must include the complete existing board and component inventory plus only the requested changes. '
+                                              'Preserve unrelated source, components and connections. Never change hardware silently to accommodate code. '
+                                              'Ask one focused question in normal text if an essential value is missing or contradictory.'))
         if needs_questions:
             messages.append(SystemMessage(content='This is an initial project build request without confirmed requirements. '
                                           'Call ask_project_questions with exactly 10 useful MCQs now; non-board questions are optional. No hardware changes may run.'))
@@ -992,9 +1204,33 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
             messages.append(SystemMessage(content='This is a targeted firmware update on an existing confirmed project, not a new build. '
                                           'Read_project and read_firmware first, preserve all components, board pins and wires, then edit_firmware or generate_firmware. '
                                           'Do not restart requirements questions, example-based building, feasibility assessment, placement or wiring. '
-                                          'Any supplied approval still restricts operations and revisions. Compile only if requested or needed to verify this edit; '
+                                          'Any supplied approval still restricts operations and revisions. Compile when requested or when needed to verify the edit; '
                                           'compilation validates the circuit and must produce a current artifact. Do not start simulation. '
-                                          'Report the exact firmware change, unchanged circuit, and what was compiled or not run; omit new physical assembly guidance.'))
+                                          'On failure, report the specific tool error and recovery action; never substitute a physical-build tutorial. '
+                                          'A source patch shown after failure is proposed only and must not be described as saved or compiled. '
+                                          'Report the exact firmware change, revision, unchanged circuit, and actual compilation status; omit new physical assembly guidance.'))
+        if addition_requested:
+            messages.append(SystemMessage(content='This is a small addition to an existing project, not initial setup or a rebuild. '
+                                          'Read_project, look up the requested part, and assess the existing circuit plus that addition. '
+                                          'Preserve the current board, every existing component and wire, and the firmware. '
+                                          'Only add the requested component and its necessary connections after the normal feasibility checks. '
+                                          'Do not ask_project_questions or load a starter example. If a pin, part, or intent is ambiguous, ask one brief question in normal text. '
+                                          'Do not write firmware or start simulation as part of this addition. Report only actual changes.'))
+        if major_change:
+            messages.append(SystemMessage(content='The user explicitly requested a major redesign. Use project setup to clarify the changed goal or board before making changes. Preserve the existing project until the new requirements are confirmed.'))
+        if targeted_edit:
+            messages.append(SystemMessage(content='This is a targeted edit of the current project, not an initial build. '
+                                          'Read_project first. Perform only the requested operation: ' + targeted_operation + '. '
+                                          'Use an existing exact ID or an unambiguous component type from the request and project. '
+                                          'If the target or requested property/value is unclear, ask one concise clarification in normal text; never guess. '
+                                          'Do not ask_project_questions, assess the whole design, load examples, add parts, change boards, rewire, write firmware, compile or run simulation. '
+                                          'Removal of a component also removes its incident wires. Preserve everything else. '
+                                          'Runtime authorization, current revision and any supplied approval still apply. '
+                                          'Report only the actual change or blocker; omit initial setup and physical assembly guidance.'))
+        elif read_requested:
+            messages.append(SystemMessage(content='This is a read-only project follow-up. Use read tools as needed. '
+                                          'Do not restart setup questions or feasibility assessment, and do not mutate the project. '
+                                          'Ask any clarification in normal text.'))
         # Disable provider transport retries without mutating a shared parent model.
         if hasattr(model, 'max_retries') and hasattr(model, 'model_copy'):
             updates = {'max_retries': 0}

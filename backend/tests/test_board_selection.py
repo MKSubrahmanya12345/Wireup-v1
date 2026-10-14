@@ -115,8 +115,7 @@ def test_board_aliases_are_canonicalized(tmp_path, alias, canonical):
         assert alias in service.catalog.components[canonical]['aliases']
 
 
-@pytest.mark.parametrize('board', ['esp32-devkit-v1', 'esp32-devkit-c-v4',
-                                  'raspberry-pi-3', 'raspberry-pi-4', 'raspberry-pi-5'])
+@pytest.mark.parametrize('board', ['raspberry-pi-3', 'raspberry-pi-4', 'raspberry-pi-5'])
 def test_unavailable_boards_never_dispatch_browser_runtime(tmp_path, board):
     class RejectRuntime:
         async def command(self, *args):
@@ -201,7 +200,12 @@ def test_esp32_compiler_full_flash_contract(tmp_path, monkeypatch, board, mode):
             (output / 'sketch.ino.merged.bin').write_bytes(flash[:-1] if mode == 'short-flash' else flash)
         return FakeProcess(code=0)
     monkeypatch.setattr(asyncio, 'create_subprocess_exec', launch)
-    service = HardwareService(tmp_path / 'projects', compiler=ArduinoCompiler(executable=str(executable)))
+    profile = tmp_path / 'arduino-cli.yaml'
+    profile.write_text('directories: {}\n', encoding='utf-8')
+    boot_app = tmp_path / 'boot_app0.bin'
+    boot_app.write_bytes(bytes(32))
+    service = HardwareService(tmp_path / 'projects', compiler=ArduinoCompiler(
+        executable=str(executable), classic_esp32_config=profile, classic_esp32_boot_app=boot_app))
     project = service.create_project(board=board)
     if mode not in ('valid', 'sketch-only'):
         with pytest.raises(HTTPException) as error:
@@ -211,14 +215,18 @@ def test_esp32_compiler_full_flash_contract(tmp_path, monkeypatch, board, mode):
         return
     result = asyncio.run(service.command(project['id'], 'compile_firmware'))
     assert captured['source'] == result['compile_source'] == project['firmware']['source']
-    assert captured['args'][3] == config['fqbn']
-    if mode == 'sketch-only':
+    assert captured['args'][captured['args'].index('--fqbn') + 1] == config['fqbn']
+    if board in ('esp32-devkit-v1', 'esp32-devkit-c-v4'):
+        assert '--config-file' in captured['args']
+    else:
+        assert '--config-file' not in captured['args']
+    if mode == 'sketch-only' and board in ('esp32-c3', 'esp32-s3'):
         assert result['status'] == 'error'
         assert result['artifact'] is None
         assert 'merged.bin' in result['errors'][0]
         return
-    assert result['status'] == ('simulation_ready' if board in ('esp32-c3', 'esp32-s3') else 'compilation_complete')
-    assert result['simulation'] == ('browser' if board in ('esp32-c3', 'esp32-s3') else 'unavailable')
+    assert result['status'] == 'simulation_ready'
+    assert result['simulation'] == ('browser' if board in ('esp32-c3', 'esp32-s3') else 'native')
     artifact = result['artifact']
     assert artifact['format'] == 'bin'
     assert artifact['image_kind'] == 'merged-flash'

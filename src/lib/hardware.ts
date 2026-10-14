@@ -104,6 +104,16 @@ export const hardwareApi = {
     request<T>(`/project/${encodeURIComponent(project.id)}/command`, {
       method: 'POST', body: JSON.stringify({ name, args, runtime_token: project.runtime_token }), signal: options.signal,
     }, hardwareCommandTimeoutMs(project.board, name, options.compileTimeoutSeconds), `Hardware ${name.replaceAll('_', ' ')}`),
+  nativeSerial: (project: HardwareProject, runId: string, data: string, options: HardwareRequestOptions = {}) =>
+    request<{ bytes_written: number }>(`/projects/${encodeURIComponent(project.id)}/native/serial`, {
+      method: 'POST', signal: options.signal, body: JSON.stringify({
+        runtime_token: project.runtime_token,
+        expected_revision: project.revision,
+        source_revision: project.firmware.revision,
+        run_id: runId,
+        data,
+      }),
+    }, 15_000, 'Native ESP32 UART write'),
 }
 
 export function catalogType(component: CatalogComponent): string {

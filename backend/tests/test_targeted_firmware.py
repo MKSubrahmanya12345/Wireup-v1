@@ -136,9 +136,10 @@ def test_actual_topology_request_still_requires_assessment(project, text):
     _, identity, calls = project
     model = Model([call('read_project'), call('generate_firmware', {'source': UPDATED}), AIMessageChunk(content='Blocked.')])
     events = collect(model, identity, text)
-    assert all(bound == agent._ASSESSMENT_TOOLS for bound in model.bound)
-    assert 'obtain approval' in json.dumps(events)
-    assert [name for name, _ in calls] == ['read_project']
+    expected = {'ask_project_questions'} if agent._major_design_change(text) else agent._ASSESSMENT_TOOLS
+    assert all(bound == expected for bound in model.bound)
+    assert ('ask_project_questions first' if agent._major_design_change(text) else 'obtain approval') in json.dumps(events)
+    assert [name for name, _ in calls] == ([] if agent._major_design_change(text) else ['read_project'])
 
 
 @pytest.mark.parametrize('board,requirements', [
@@ -158,13 +159,15 @@ def test_missing_or_changed_board_still_requires_assessment(project, board, requ
     assert [name for name, _ in calls] == ['read_project']
 
 
-def test_unconfirmed_edit_still_requires_questions(project):
+def test_existing_edit_reuses_project_state_without_questionnaire(project):
     _, identity, calls = project
     model = Model([call('generate_firmware', {'source': UPDATED}), AIMessageChunk(content='Blocked.')])
     events = collect(model, identity, requirements=None)
-    assert all(bound == {'ask_project_questions'} for bound in model.bound)
+    assert all(bound <= agent._FIRMWARE_TOOLS for bound in model.bound)
+    assert not any(event['type'] == 'questions' for event in events)
     assert not calls
     assert events[-1]['status'] == 'error'
+    assert 'read_project successfully' in json.dumps(events)
 
 
 def review(hardware, identity, operations):

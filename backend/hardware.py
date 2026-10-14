@@ -66,13 +66,15 @@ for board_id, name, target, chip, bootloader_offset in [
     ('esp32-s3', 'ESP32-S3 DevKitC-1', 'esp32s3', 'esp32s3', 0),
     ('esp32-c3', 'ESP32-C3 DevKitM-1', 'esp32c3', 'esp32c3', 0),
 ]:
+    classic = chip == 'esp32'
     BOARDS.append({'id': board_id, 'name': name, 'fqbn': f'esp32:esp32:{target}',
-                   'compile': True, 'simulation': 'browser' if chip in ('esp32c3', 'esp32s3') else 'unavailable', 'format': 'bin', 'runtime': 'esp-emu-wasm' if chip in ('esp32c3', 'esp32s3') else 'qemu',
+                   'compile': True, 'simulation': 'native' if classic else 'browser', 'format': 'bin',
+                   'runtime': 'qemu-native' if classic else 'esp-emu-wasm',
                    'tagName': 'wokwi-' + board_id, 'chip': chip, 'bootloader_offset': bootloader_offset,
                    'flash_size_bytes': 4 * 1024 * 1024, 'compile_timeout_seconds': 600,
                    'wifi': False, 'bluetooth': False,
-                   'simulation_scope': 'Official Espressif WASM CPU, UART0 and sampled external GPIO; no connected sensor buses or real networking' if chip in ('esp32c3', 'esp32s3') else None,
-                   'unavailable_reason': 'Classic ESP32 requires the compatible patched native Velxio QEMU runtime; the official WASM emulator does not support this chip.' if chip == 'esp32' else None})
+                   'simulation_scope': 'Native classic ESP32 CPU and UART0; GPIO, connected components, sensor buses and networking are not bridged.' if classic else 'Official Espressif WASM CPU, UART0 and sampled external GPIO; no connected sensor buses or real networking',
+                   'unavailable_reason': None})
 for model in (3, 4, 5):
     BOARDS.append({'id': f'raspberry-pi-{model}', 'name': f'Raspberry Pi {model}', 'fqbn': None,
                    'compile': False, 'simulation': 'unavailable', 'format': None, 'runtime': 'qemu-linux',
@@ -501,13 +503,38 @@ class ComponentCatalog:
 
 
 class ArduinoCompiler:
-    def __init__(self, executable=None, timeout=None, output_limit=256000):
+    def __init__(self, executable=None, timeout=None, output_limit=256000,
+                 classic_esp32_config=None, classic_esp32_boot_app=None):
         self.executable = executable or os.getenv('ARDUINO_CLI_PATH') or shutil.which('arduino-cli')
         if not self.executable:
             candidate = Path('C:/Program Files/Arduino CLI/arduino-cli.exe')
             self.executable = str(candidate) if candidate.is_file() else None
         self.timeout = timeout
         self.output_limit = output_limit
+        self.classic_esp32_config = Path(classic_esp32_config) if classic_esp32_config else ROOT / 'vendor/qemu/arduino-cli.yaml'
+        self.classic_esp32_boot_app = Path(classic_esp32_boot_app) if classic_esp32_boot_app else ROOT / 'vendor/qemu/arduino-data/packages/esp32/hardware/esp32/2.0.17/tools/partitions/boot_app0.bin'
+
+    def _classic_esp32_flash(self, output, build, board):
+        if not self.classic_esp32_boot_app.is_file():
+            fail(503, 'Classic ESP32 simulation requires the pinned Arduino ESP32 2.0.17 profile. Install it in vendor/qemu before compiling.')
+        flash = bytearray(b'\xff' * board['flash_size_bytes'])
+        for offset, filename, source in [
+            (board['bootloader_offset'], 'sketch.ino.bootloader.bin', output / 'sketch.ino.bootloader.bin'),
+            (0x8000, 'sketch.ino.partitions.bin', output / 'sketch.ino.partitions.bin'),
+            (0xe000, 'boot_app0.bin', self.classic_esp32_boot_app),
+            (0x10000, 'sketch.ino.bin', output / 'sketch.ino.bin'),
+        ]:
+            if not source.is_file():
+                fail(502, f'Compiler produced no classic ESP32 {filename} segment.')
+            data = source.read_bytes()
+            if not data or offset + len(data) > len(flash):
+                fail(502, f'Compiler produced an invalid classic ESP32 {filename} segment.')
+            flash[offset:offset + len(data)] = data
+            if filename == 'boot_app0.bin':
+                (build / filename).write_bytes(data)
+        merged = output / 'sketch.ino.merged.bin'
+        merged.write_bytes(flash)
+        return merged
 
     async def _terminate(self, process):
         if process.returncode is not None:
@@ -582,11 +609,17 @@ class ArduinoCompiler:
             sketch.mkdir()
             (sketch / 'sketch.ino').write_text(compile_source, encoding='utf-8')
             output = Path(directory) / 'output'
+            build = Path(directory) / 'build'
+            command = [str(self.executable), 'compile']
+            if board['runtime'] == 'qemu-native':
+                if not self.classic_esp32_config.is_file():
+                    fail(503, 'Classic ESP32 simulation requires the pinned Arduino ESP32 2.0.17 profile. Install it in vendor/qemu before compiling.')
+                command.extend(['--config-file', str(self.classic_esp32_config)])
+            command.extend(['--fqbn', board['fqbn'], '--output-dir', str(output),
+                            '--build-path', str(build), str(sketch)])
             try:
                 process = await asyncio.create_subprocess_exec(
-                    str(self.executable), 'compile', '--fqbn', board['fqbn'],
-                    '--output-dir', str(output), '--build-path', str(Path(directory) / 'build'), str(sketch),
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                    *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                     **({'start_new_session': True} if os.name != 'nt' else {}),
                 )
             except OSError:
@@ -615,8 +648,10 @@ class ArduinoCompiler:
                 fail(502, str(error))
             artifact_format = board['format']
             artifact_path = output / ('sketch.ino.merged.bin' if board.get('chip') else f'sketch.ino.{artifact_format}')
+            if code == 0 and board['runtime'] == 'qemu-native' and not artifact_path.is_file():
+                artifact_path = self._classic_esp32_flash(output, build, board)
             successful = code == 0 and artifact_path.is_file()
-            result = {'status': ('simulation_ready' if board['simulation'] == 'browser' else 'compilation_complete') if successful else 'error',
+            result = {'status': ('simulation_ready' if board['simulation'] in ('browser', 'native') else 'compilation_complete') if successful else 'error',
                       'simulation': board['simulation'], 'runtime': board['runtime'],
                       'unavailable_reason': board.get('unavailable_reason'),
                       'stdout': stdout, 'stderr': stderr, 'errors': [] if code == 0 else stderr.splitlines(),
@@ -635,7 +670,7 @@ class ArduinoCompiler:
                         fail(502, 'Compiler did not produce a valid Intel HEX artifact.')
                     artifact['hex'] = hex_text
                 elif board.get('chip'):
-                    artifact.update(self._esp32_artifact(output, Path(directory) / 'build', board, artifact_path.read_bytes()))
+                    artifact.update(self._esp32_artifact(output, build, board, artifact_path.read_bytes()))
                 else:
                     binary = artifact_path.read_bytes()
                     if len(binary) < 264:
@@ -761,6 +796,7 @@ class HardwareService:
                    'board': board, 'components': [] if board == 'unselected' else [{'id': 'board', 'type': board, 'x': 120, 'y': 100,
                                                    'rotation': 0, 'properties': {}}], 'wires': [],
                    'firmware': {'filename': 'main.py' if board.startswith('raspberry-pi-') else 'sketch.ino', 'source': '' if board == 'unselected' or board.startswith('raspberry-pi-') else DEFAULT_BOARD_SOURCES.get(board, DEFAULT_SOURCE), 'revision': 1},
+                   'requirements': {'status': 'unconfirmed', 'answers': {}},
                    'history': [], '_undo': [], 'compiler': None, '_artifacts': {},
                    'runtime_token': secrets.token_urlsafe(32), 'created_at': now(), 'updated_at': now()}
         with self.lock:
@@ -797,7 +833,28 @@ class HardwareService:
     def _check_revision(self, project, args):
         revision = args.get('expected_revision')
         if revision is not None and (type(revision) is not int or revision != project['revision']):
-            fail(409, f'Project revision conflict; current revision is {project["revision"]}.')
+            fail(409, {'code': 'stale_project_revision',
+                       'message': f'Project revision conflict; current revision is {project["revision"]}.',
+                       'expected_revision': revision, 'actual_revision': project['revision'],
+                       'recovery': 'Reload the project and retry the change against the current revision.'})
+
+    def confirm_requirements(self, project_id, answers):
+        if not isinstance(answers, dict) or not 1 <= len(answers) <= 20:
+            fail(400, 'Confirmed requirements must be a nonempty bounded object.')
+        if any(not isinstance(key, str) or not key or len(key) > 80
+               or not isinstance(value, str) or not value or len(value) > 1000
+               for key, value in answers.items()):
+            fail(400, 'Confirmed requirements contain an invalid answer.')
+        with self.lock:
+            project = self._load(project_id)
+            confirmed = {'status': 'confirmed', 'answers': copy.deepcopy(answers),
+                         'project_revision': project['revision'], 'updated_at': now()}
+            existing = project.get('requirements')
+            if isinstance(existing, dict) and existing.get('status') == 'confirmed' and existing.get('answers') == answers:
+                return copy.deepcopy(existing)
+            project['requirements'] = confirmed
+            self._save(project)
+            return copy.deepcopy(confirmed)
 
     def _properties(self, kind, supplied, existing=None):
         if not isinstance(supplied, dict) or len(json.dumps(supplied, allow_nan=False)) > 16000:
@@ -947,7 +1004,10 @@ class HardwareService:
                     if not isinstance(old, str) or not old or not isinstance(new, str) or current.count(old) != 1:
                         fail(400, 'Firmware edit must match exactly one nonempty source segment.')
                     source = current.replace(old, new, 1)
-                project['firmware']['source'] = source_text(source)
+                source = source_text(source)
+                if source == project['firmware']['source']:
+                    return public(project)
+                project['firmware']['source'] = source
                 project['firmware']['revision'] += 1
             elif name == 'undo':
                 if not project['_undo']:
@@ -1052,7 +1112,7 @@ class HardwareService:
         if name in ('run_simulation', 'stop_simulation', 'read_simulation_results'):
             self.authorize_runtime(project, runtime_token)
             board = BOARD_CONFIG.get(project['board'])
-            if args.get('runtime') == 'qemu-native':
+            if board and board['runtime'] == 'qemu-native':
                 from backend.native_esp32 import RunRequest, StopRequest
                 revision_args = {'runtime_token': runtime_token, 'expected_revision': args.get('expected_revision', project['revision']),
                                  'source_revision': args.get('source_revision', project['firmware']['revision'])}

@@ -92,7 +92,8 @@ export function ChatApp({ projectId, runtimeToken, embedded = false, initialProm
     } : chat))
   }
 
-  const generate = async (chat: Conversation, context: Message[], answers = chat.projectId === projectId ? chat.requirements : undefined, approval?: { assessment_id: string; choice: string }) => {
+  const confirmedProjectRequirements = projectId ? [...chats].sort((a, b) => b.updatedAt - a.updatedAt).find(chat => chat.projectId === projectId && chat.requirements)?.requirements : undefined
+  const generate = async (chat: Conversation, context: Message[], answers = (chat.projectId === projectId ? chat.requirements : undefined) || confirmedProjectRequirements, approval?: { assessment_id: string; choice: string }) => {
     if (controller.current) return
     const abort = new AbortController()
     controller.current = abort

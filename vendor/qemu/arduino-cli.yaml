@@ -1,0 +1,9 @@
+board_manager:
+  additional_urls:
+    - https://espressif.github.io/arduino-esp32/package_esp32_index.json
+directories:
+  data: vendor/qemu/arduino-data
+  downloads: vendor/qemu/arduino-downloads
+  user: vendor/qemu/arduino-user
+logging:
+  level: warn

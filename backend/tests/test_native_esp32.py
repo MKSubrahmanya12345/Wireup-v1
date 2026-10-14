@@ -324,20 +324,18 @@ def test_explicit_native_hardware_command_routing(setup):
         for name in ('run_simulation', 'read_simulation_results', 'stop_simulation'):
             result = await setup.service.command(setup.project['id'], name, args, setup.project['runtime_token'])
             assert result['status'] == 'acknowledged' and result['result']['runtime'] == 'qemu-native'
-        assert BOARD_CONFIG[setup.project['board']]['simulation'] == 'unavailable'
+        assert BOARD_CONFIG[setup.project['board']]['simulation'] == 'native'
 
     setup.client.portal.call(exercise)
 
 
-def test_optional_frontend_adapter_uses_existing_bridge(setup):
+def test_classic_esp32_never_dispatches_the_browser_bridge(setup):
     setup.service.runtime.sessions[setup.project['id']] = object()
     setup.service.runtime.command = AsyncMock(return_value={'status': 'acknowledged', 'result': {'running': True}})
-    setup.client.portal.call(setup.service.command, setup.project['id'], 'run_simulation', {}, setup.project['runtime_token'])
-    call = setup.service.runtime.command.call_args
-    assert call.args[1] == 'run_simulation'
-    assert call.args[2]['artifact']['image_kind'] == 'merged-flash'
-    assert 'runtime_token' not in call.args[2]['project']
-    setup.spawn.assert_not_awaited()
+    result = setup.client.portal.call(setup.service.command, setup.project['id'], 'run_simulation', {}, setup.project['runtime_token'])
+    assert result['result']['runtime'] == 'qemu-native'
+    setup.service.runtime.command.assert_not_awaited()
+    assert setup.spawn.await_count == 1
 
 
 def test_qemu_discovery_is_vendor_only_and_env_is_operator_owned(tmp_path, monkeypatch):

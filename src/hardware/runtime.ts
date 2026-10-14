@@ -17,7 +17,7 @@ export type RuntimeResults = {
   running: boolean; engine: string; artifact_id: string | null; cycles: number; simulated_ms: number
   serial: string; serial_link: unknown; pins: Record<string, { level: boolean | null; drive: string }>
   limitations: string[]; board?: string | null; clock_hz?: number; samples?: DigitalSample[]
-  sample_capacity?: number; dropped_samples?: number; state?: string; error?: string | null
+  sample_capacity?: number; dropped_samples?: number; state?: string; error?: string | null; run_id?: string
   peripherals?: Record<string, PeripheralState>; support_warnings?: string[]
 }
 export type RuntimeArtifact = Omit<HardwareArtifact, 'hex'> & {

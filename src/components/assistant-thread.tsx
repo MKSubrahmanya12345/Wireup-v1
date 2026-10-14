@@ -266,7 +266,7 @@ function AssistantMessageView() {
 }
 
 function ThinkingIndicator() {
-  return <div className="wireup-aui__thinking" role="status"><AgentGears/><span>Thinking<span className="wireup-aui__thinking-dots" aria-hidden="true">…</span></span></div>
+  return <div className="wireup-aui__thinking" role="status"><AgentGears/><span className="wireup-aui__thinking-label">Thinking<span className="wireup-aui__thinking-dots" aria-hidden="true">…</span></span></div>
 }
 
 function RunOutcome({ message }: { message: AssistantMessage }) {

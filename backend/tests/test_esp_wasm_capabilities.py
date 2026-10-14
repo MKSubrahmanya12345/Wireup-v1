@@ -4,12 +4,14 @@ from fastapi import HTTPException
 from backend.hardware import HardwareService, BOARD_CONFIG
 
 
-def test_only_official_supported_chips_are_enabled():
+def test_esp32_runtimes_are_chip_specific():
     for board in ('esp32-c3','esp32-s3'):
         assert BOARD_CONFIG[board]['simulation']=='browser'
         assert BOARD_CONFIG[board]['runtime']=='esp-emu-wasm'
     for board in ('esp32-devkit-v1','esp32-devkit-c-v4'):
-        assert BOARD_CONFIG[board]['simulation']=='unavailable'
+        assert BOARD_CONFIG[board]['simulation']=='native'
+        assert BOARD_CONFIG[board]['runtime']=='qemu-native'
+        assert 'GPIO' in BOARD_CONFIG[board]['simulation_scope']
 
 
 @pytest.mark.parametrize('board',['esp32-c3','esp32-s3'])

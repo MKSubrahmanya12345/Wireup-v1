@@ -19,7 +19,7 @@ for (const width of [1440, 390]) test(`thinking gears and bottom composer at ${w
   await expect(thinking.locator('img').first()).toHaveCSS('animation-name', 'aui-gear-turn')
   await expect(page.getByText('AI can make mistakes. Check wiring and real test results.', { exact: true })).toHaveCount(0)
   await expect(page.locator('.wireup-aui__stop-note')).toHaveCount(0)
-  await expect(page.locator('.wireup-aui__composer')).toHaveCSS('border-radius', '6px')
+  await expect(page.locator('.wireup-aui__composer')).toHaveCSS('border-radius', '8px')
   const footer = await page.locator('.wireup-aui__footer').boundingBox()
   const composer = await page.locator('.wireup-aui__composer').boundingBox()
   expect(Math.abs(footer!.y + footer!.height - composer!.y - composer!.height)).toBeLessThan(2)
