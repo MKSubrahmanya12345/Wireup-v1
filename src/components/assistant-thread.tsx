@@ -20,7 +20,8 @@ import { ArrowDown, ArrowUp, Check, ChevronRight, Copy, RotateCcw, Square } from
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { Message } from '@/lib/chat'
-import { modelOptionKey } from '@/lib/model-selection'
+import { ChatModelPicker } from './ui/chat-model-picker'
+import { AgentGears } from './ui/agent-gears'
 import type { ModelOption, ModelProvider } from '@/lib/model-selection'
 import { FeasibilityCard } from './ui/feasibility-card'
 import type { ActivityBlock } from './ui/agent-activity-feed'
@@ -161,13 +162,12 @@ export function AssistantThread(props: AssistantThreadProps) {
               <div className="wireup-aui__empty"><h2>What can I help you build?</h2><p>Describe your circuit, ask about a board, or paste an error.</p></div>
             </ThreadPrimitive.Empty>
             <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage: AssistantMessageView }} />
-            {props.busy && !messages.some(message => message.role === 'assistant' && isActive((message as AssistantMessage).run?.status || message.status || '')) && <p className="wireup-aui__waiting" role="status">Waiting for the backend…</p>}
+            {props.busy && !messages.some(message => message.role === 'assistant' && isActive((message as AssistantMessage).run?.status || message.status || '')) && <ThinkingIndicator/>}
           </div>
         </ThreadPrimitive.Viewport>
         <div className="wireup-aui__footer">
           <ThreadPrimitive.ScrollToBottom className="wireup-aui__latest" aria-label="Scroll to latest message"><ArrowDown size={14} /> Latest message</ThreadPrimitive.ScrollToBottom>
           <AssistantComposer />
-          <p className="wireup-aui__disclaimer">AI can make mistakes. Check wiring and real test results.</p>
         </div>
       </ThreadPrimitive.Root>
     </AssistantRuntimeProvider>
@@ -184,8 +184,6 @@ function DraftBridge({ draft }: { draft: string }) {
 
 function AssistantComposer() {
   const { busy, compact, onDraftChange, models, selectionKey, onModelChange } = useThreadProps()
-  const [modelFilter, setModelFilter] = useState('')
-  const filteredModels = models?.filter(model => modelOptionKey(model) === selectionKey || model.model.toLowerCase().includes(modelFilter.toLowerCase()))
   return <ComposerPrimitive.Root className="wireup-aui__composer">
     <ComposerPrimitive.Input
       className="wireup-aui__input" aria-label="Message WireUp" placeholder="Ask about your project…"
@@ -193,13 +191,10 @@ function AssistantComposer() {
       onChange={event => onDraftChange(event.target.value)}
     />
     <div className="wireup-aui__composer-bar">
-      {models?.length ? <label className="wireup-aui__model"><input type="search" aria-label="Filter models" placeholder="Find model…" value={modelFilter} onChange={event => setModelFilter(event.target.value)} disabled={busy}/><select aria-label="AI model provider" value={selectionKey || modelOptionKey(models[0])} disabled={busy || !onModelChange} onChange={event => onModelChange?.(event.target.value)}>
-        {filteredModels?.map(model => <option key={modelOptionKey(model)} value={modelOptionKey(model)} disabled={!model.configured}>{model.model}{model.configured ? '' : ' — API key required'}</option>)}
-      </select></label> : <span className="wireup-aui__hint">Enter to send · Shift+Enter for a new line</span>}
+      {models?.length ? <ChatModelPicker models={models} value={selectionKey} onChange={onModelChange} disabled={busy}/> : <span className="wireup-aui__hint">Enter to send · Shift+Enter for a new line</span>}
       {busy ? <ComposerPrimitive.Cancel className="wireup-aui__stop" aria-label="Stop generation"><Square size={13} /> Stop</ComposerPrimitive.Cancel>
         : <ComposerPrimitive.Send className="wireup-aui__send" aria-label="Send message"><ArrowUp size={17} /></ComposerPrimitive.Send>}
     </div>
-    {busy && <p className="wireup-aui__stop-note">Stopping generation does not revert saved changes or stop a running simulation.</p>}
   </ComposerPrimitive.Root>
 }
 
@@ -264,10 +259,14 @@ function AssistantMessageView() {
     {message.feasibility && <div className="wireup-aui__feasibility"><FeasibilityCard report={message.feasibility} onChoose={onFeasibility} busy={busy} selected={message.feasibilityChoice} /></div>}
     {message.questions && <section className="wireup-aui__setup"><h3>Set up your project</h3>{message.questions.summary && <p>{message.questions.summary}</p>}<button type="button" onClick={() => onOpenQuestions(message)} disabled={busy}>Open project setup · {message.questions.questions.length} questions</button></section>}
     <MessagePrimitive.Parts components={{ Text: AnswerPart, Reasoning: ProcessPart, tools: { Override: ToolPart }, Empty: EmptyPart }} />
-    {active && <p className="wireup-aui__waiting" role="status">{hasEvents ? 'Backend response in progress.' : 'Waiting for the backend…'}</p>}
+    {active && !hasEvents && <ThinkingIndicator/>}
     <RunOutcome message={message} />
     {!active && <MessageActions message={message} retry={!busy && last ? onRetry : undefined} />}
   </MessagePrimitive.Root>
+}
+
+function ThinkingIndicator() {
+  return <div className="wireup-aui__thinking" role="status"><AgentGears/><span>Thinking<span className="wireup-aui__thinking-dots" aria-hidden="true">…</span></span></div>
 }
 
 function RunOutcome({ message }: { message: AssistantMessage }) {

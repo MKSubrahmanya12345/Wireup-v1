@@ -1,8 +1,7 @@
-import { useMemo, useRef } from 'react'
+import { useRef } from 'react'
 import { Cable, Cpu, GitCompare, Lightbulb } from 'lucide-react'
 import { AiPromptInput } from './ai-prompt-input'
-import type { AiModel } from './ai-prompt-input'
-import { modelOptionKey } from '@/lib/model-selection'
+import { ChatModelPicker } from './chat-model-picker'
 import type { ModelOption, ModelProvider } from '@/lib/model-selection'
 
 type Props = {
@@ -32,14 +31,6 @@ export function ChatComposer({ value, onChange, onSend, onStop, busy, models, se
   const recognition = useRef<SpeechRecognitionLike | null>(null)
   const transcript = useRef('')
 
-  // Map the backend's health-checked providers onto the selector; unconfigured
-  // providers stay visible but disabled, with the missing key called out.
-  const aiModels = useMemo<AiModel[]>(() => (models ?? []).map(option => ({
-    id: modelOptionKey(option),
-    label: !option.model || /^Configured /.test(option.model) ? option.label : option.model.split('/').pop() || option.model,
-    description: `${option.model}${option.configured ? '' : ' — API key required'}`,
-    disabled: !option.configured,
-  })), [models])
 
   const onDictationChange = (listening: boolean) => {
     if (!listening) {
@@ -98,15 +89,14 @@ export function ChatComposer({ value, onChange, onSend, onStop, busy, models, se
         minRows={1}
         className={compact ? 'wireup-prompt-compact' : undefined}
         placeholders={placeholders}
-        models={aiModels}
-        modelSelection={selectionKey ? { id: selectionKey } : undefined}
-        onModelSelectionChange={selection => onModelChange?.(selection.id)}
+        showModelSelector={false}
         customActions={quickPrompts.map(prompt => ({ ...prompt, onSelect: () => onChange(value.trim() ? `${value.trimEnd()} ${prompt.label}` : prompt.label) }))}
         onUploadFile={() => fileInput.current?.click()}
         getDictationTranscript={getDictationTranscript}
         onDictationChange={onDictationChange}
         aria-label="Message WireUp"
       />
+      <div className="mt-2"><ChatModelPicker models={models || []} value={selectionKey} onChange={onModelChange} disabled={busy}/></div>
     </div>
   )
 }

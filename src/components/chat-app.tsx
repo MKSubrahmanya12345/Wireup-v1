@@ -12,7 +12,7 @@ import type { ActivityEvent } from './ui/agent-activity-feed'
 import { isFeasibility, isQuestions, readChats, storageKey, streamReply } from '@/lib/chat'
 import type { Conversation, Message } from '@/lib/chat'
 import { projectTitle } from '@/lib/project-title'
-import { defaultModels, modelOptionKey, readModelSelection, readSelectedModel } from '@/lib/model-selection'
+import { defaultModels, modelOptionKey, readSelectedModel } from '@/lib/model-selection'
 import type { ModelOption, ModelProvider } from '@/lib/model-selection'
 
 export function ChatApp({ projectId, runtimeToken, embedded = false, initialPrompt, setupGuidance }: { projectId?: string; runtimeToken?: string; embedded?: boolean; initialPrompt?: string; setupGuidance?: string } = {}) {
@@ -29,18 +29,16 @@ export function ChatApp({ projectId, runtimeToken, embedded = false, initialProm
   const [drawer, setDrawer] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   const [health, setHealth] = useState<{ configured: boolean; model: string; providers?: ModelOption[] } | null>(null)
-  const [provider, setProvider] = useState<ModelProvider>(readModelSelection)
+  const provider: ModelProvider = 'azure'
   const [modelId, setModelId] = useState(readSelectedModel)
-  const [discoveredModels, setDiscoveredModels] = useState<ModelOption[]>([])
-  const [modelNotice, setModelNotice] = useState('')
   const providerModels = health?.providers || defaultModels.map(option => option.id === 'groq' && health ? { ...option, model: health.model, configured: health.configured } : option)
-  const models = [...discoveredModels, ...providerModels].map(option => ({ ...option, configured: providerModels.find(provider => provider.id === option.id)?.configured ?? option.configured })).filter((option, index, all) => all.findIndex(candidate => modelOptionKey(candidate) === modelOptionKey(option)) === index).sort((a, b) => a.model.localeCompare(b.model))
-  const selectedModel = models.find(option => option.id === provider && option.model === modelId) || providerModels.find(option => option.id === provider) || defaultModels.find(option => option.id === provider)!
+  const accessibleModelIds = ['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-6-astra', 'gpt-6-luna', 'gpt-6-sol', 'gpt-6.1-sol']
+  const models: ModelOption[] = accessibleModelIds.map(model => ({ id: 'azure', label: 'Azure', model, configured: providerModels.find(option => option.id === 'azure')?.configured ?? false }))
+  const selectedModel = models.find(option => option.model === modelId) || models.find(option => option.model === 'gpt-6.1-sol')!
   const selectionKey = modelOptionKey(selectedModel)
   const changeModel = (key: string) => {
     const option = models.find(option => modelOptionKey(option) === key)
     if (!option) return
-    setProvider(option.id)
     setModelId(option.model)
     try { localStorage.setItem('wireup.model-provider', option.id); localStorage.setItem('wireup.model-id', option.model) } catch { /* Selection remains available for this page. */ }
   }
@@ -82,19 +80,6 @@ export function ChatApp({ projectId, runtimeToken, embedded = false, initialProm
     }
   }, [])
   useEffect(() => { void checkHealth() }, [checkHealth])
-  useEffect(() => {
-    const abort = new AbortController()
-    const timer = setTimeout(() => abort.abort(), 20000)
-    void fetch('/api/models', { signal: abort.signal }).then(async response => {
-      if (!response.ok) throw new Error()
-      const data = await response.json()
-      if (!Array.isArray(data.models)) throw new Error()
-      const valid = data.models.filter((option: ModelOption) => option && ['groq', 'nvidia', 'bedrock', 'azure'].includes(option.id) && typeof option.model === 'string' && typeof option.label === 'string' && typeof option.configured === 'boolean')
-      setDiscoveredModels(valid)
-      setModelNotice(data.errors && Object.keys(data.errors).length ? 'Some providers could not list their models. Their configured models remain available.' : '')
-    }).catch(() => { if (!abort.signal.aborted) setModelNotice('Model discovery is unavailable. Showing configured models.') }).finally(() => clearTimeout(timer))
-    return () => { clearTimeout(timer); abort.abort() }
-  }, [])
   useEffect(() => () => controller.current?.abort(), [])
   useLayoutEffect(() => {
     if (!embedded) setDraft('')
@@ -274,7 +259,6 @@ export function ChatApp({ projectId, runtimeToken, embedded = false, initialProm
           {warning || connectionError || `Add ${selectedKeyName} to the project .env file, then retry to enable ${selectedModel.label} replies.`}
           <button onClick={() => { setWarning(''); void checkHealth() }} className="ml-3 underline underline-offset-2">Check again</button>
         </div>}
-        {modelNotice && <div role="status" className="shrink-0 px-4 py-2 text-xs text-neutral-400">{modelNotice}</div>}
         {busy && busy !== id && <div role="status" className="shrink-0 border-b border-neutral-800 px-4 py-2 text-xs text-neutral-300">Another conversation is running. <button type="button" className="ml-2 underline" onClick={() => { if (embedded) setEmbeddedId(busy); else navigate(`/chat/${busy}`) }}>Open running conversation</button><button type="button" className="ml-3 underline" onClick={() => controller.current?.abort()}>Stop other conversation</button></div>}
         {id && !active ? <div className="flex flex-1 flex-col items-center justify-center gap-4 p-6 text-center"><MessageSquare className="text-neutral-500" size={32} /><h1 className="text-xl font-semibold">Conversation not found</h1><p className="text-sm text-neutral-400">This chat may have been deleted or saved in another browser.</p><Link to="/assistant" className="rounded-xl bg-white px-4 py-2 text-sm text-black">Start a new chat</Link></div>
           : home && embedded ? <div className="flex min-h-0 flex-1 flex-col justify-end gap-3 p-4">

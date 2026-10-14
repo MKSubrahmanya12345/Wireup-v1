@@ -22,13 +22,21 @@ def test_lists_all_models_and_cache(monkeypatch):
     assert len(calls) == 1
 
 
+def test_azure_uses_confirmed_accessible_models(monkeypatch):
+    model_discovery._cache.clear()
+    monkeypatch.setattr(model_discovery, 'model_options', lambda: [{'id': 'azure', 'label': 'Azure', 'model': 'gpt-6.1-sol', 'configured': True}])
+    result = asyncio.run(model_discovery.discover_models())
+    assert {item['model'] for item in result['models']} == set(model_discovery.AZURE_ACCESSIBLE_MODELS)
+    assert len(result['models']) == 7
+
+
 def test_failure_preserves_default_without_exposing_credentials(monkeypatch):
     model_discovery._cache.clear()
-    monkeypatch.setattr(model_discovery, 'model_options', lambda: [{'id': 'azure', 'label': 'Azure', 'model': 'deployment', 'configured': True}])
+    monkeypatch.setattr(model_discovery, 'model_options', lambda: [{'id': 'nvidia', 'label': 'NVIDIA', 'model': 'deployment', 'configured': True}])
     class Client:
         def __init__(self, **kwargs): raise RuntimeError('secret-key')
     monkeypatch.setattr(model_discovery.httpx, 'AsyncClient', Client)
     result = asyncio.run(model_discovery.discover_models())
     assert result['models'][0]['model'] == 'deployment'
-    assert 'azure' in result['errors']
+    assert 'nvidia' in result['errors']
     assert 'secret-key' not in str(result)

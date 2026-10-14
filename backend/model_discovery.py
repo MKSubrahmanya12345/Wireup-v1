@@ -7,6 +7,7 @@ import httpx
 from backend.models import model_options, NVIDIA_BASE_URL, AZURE_BASE_URL
 
 _cache = {}
+AZURE_ACCESSIBLE_MODELS = ('gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-6-astra', 'gpt-6-luna', 'gpt-6-sol', 'gpt-6.1-sol')
 
 
 async def discover_models():
@@ -21,7 +22,9 @@ async def discover_models():
             return [], None
         provider = option['id']
         try:
-            if provider == 'bedrock':
+            if provider == 'azure':
+                ids = list(AZURE_ACCESSIBLE_MODELS)
+            elif provider == 'bedrock':
                 def listing():
                     import boto3
                     from botocore.config import Config

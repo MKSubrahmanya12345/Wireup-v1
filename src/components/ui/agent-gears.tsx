@@ -1,5 +1,3 @@
-import { Cog } from 'lucide-react'
-
 export function AgentGears() {
-  return <span className="wireup-agent-gears" aria-hidden="true"><Cog className="wireup-agent-gear-primary"/><Cog className="wireup-agent-gear-secondary"/><Cog className="wireup-agent-gear-small"/></span>
+  return <span className="wireup-agent-gears" aria-hidden="true"><img src="/chat-gears/primary.png" alt="" className="wireup-agent-gear-primary"/><img src="/chat-gears/secondary.png" alt="" className="wireup-agent-gear-secondary"/><img src="/chat-gears/small.png" alt="" className="wireup-agent-gear-small"/></span>
 }
