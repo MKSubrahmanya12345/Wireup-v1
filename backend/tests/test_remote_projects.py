@@ -8,18 +8,18 @@ class Client:
     async def __aenter__(self): return self
     async def __aexit__(self, *args): pass
     async def capabilities(self): return {'boards': ['esp32-devkit-v1']}
-    async def start(self, board, firmware): return {'session_id': 'a' * 32, 'state': 'running'}
-    async def results(self, session): return {'session_id': session, 'state': 'running', 'serial': 'hello'}
-    async def stop(self, session): return {'session_id': session, 'state': 'stopped'}
+    async def start(self, board, firmware): return {'session_id': 'a' * 32, 'status': 'running'}
+    async def results(self, session): return {'session_id': session, 'status': 'running', 'serial': 'hello'}
+    async def stop(self, session): return {'session_id': session, 'status': 'stopped'}
 
 
 def test_remote_runtime_uses_actual_service_acknowledgements():
     async def run():
         runtime = RemoteProjectRuntimes(lambda: Client())
         project = {'id': 'project', 'board': 'esp32-devkit-v1'}
-        assert (await runtime.command(project, 'run_simulation', {'program': 'base64'}))['state'] == 'running'
+        assert (await runtime.command(project, 'run_simulation', {'program': 'base64'}))['status'] == 'running'
         assert (await runtime.command(project, 'read_simulation_results'))['serial'] == 'hello'
-        assert (await runtime.command(project, 'stop_simulation'))['state'] == 'stopped'
+        assert (await runtime.command(project, 'stop_simulation'))['status'] == 'stopped'
         assert not runtime.sessions
     asyncio.run(run())
 

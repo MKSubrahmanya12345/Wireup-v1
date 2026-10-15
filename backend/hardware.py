@@ -1112,7 +1112,8 @@ class HardwareService:
         if name in ('run_simulation', 'stop_simulation', 'read_simulation_results'):
             self.authorize_runtime(project, runtime_token)
             board = BOARD_CONFIG.get(project['board'])
-            if board and board['runtime'] == 'qemu-native':
+            remote = project['board'] in ('esp32-devkit-v1', 'esp32-devkit-c-v4', 'esp32-s3', 'esp32-c3') and bool(os.getenv('REMOTE_SIMULATION_URL'))
+            if board and board['runtime'] == 'qemu-native' and not remote:
                 from backend.native_esp32 import RunRequest, StopRequest
                 revision_args = {'runtime_token': runtime_token, 'expected_revision': args.get('expected_revision', project['revision']),
                                  'source_revision': args.get('source_revision', project['firmware']['revision'])}
@@ -1136,7 +1137,6 @@ class HardwareService:
                                                        revision_args['expected_revision'], revision_args['source_revision'],
                                                        cursor=cursor, run_id=args.get('run_id'))
                 return {'status': 'acknowledged', 'command': name, 'result': result}
-            remote = project['board'] in ('esp32-devkit-v1', 'esp32-devkit-c-v4', 'esp32-s3', 'esp32-c3') and bool(os.getenv('REMOTE_SIMULATION_URL'))
             native_adapter = project['board'] in ('esp32-devkit-v1', 'esp32-devkit-c-v4') and project_id in getattr(self.runtime, 'sessions', {})
             if not board or (board['simulation'] != 'browser' and not remote and not native_adapter):
                 fail(503, board['unavailable_reason'] if board else 'This board has no configured runtime.')

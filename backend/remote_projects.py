@@ -40,7 +40,7 @@ class RemoteProjectRuntimes:
                         session = result.get('id') or result.get('session_id')
                         if not session:
                             raise RemoteSimulationError('Remote emulator did not return a session ID.')
-                        if result.get('state') != 'running':
+                        if result.get('status') != 'running':
                             await client.stop(session)
                             raise RemoteSimulationError('Remote emulator did not acknowledge a running session.')
                         self.sessions[project['id']] = session
