@@ -23,6 +23,15 @@ audit-artifacts/
 playwright-report
 *.local
 
+# Native simulator source/build trees (recreated by scripts)
+vendor/qemu-picsimlab-src/
+vendor/qemu-picsimlab-build/
+
+# Local Arduino compiler profile and downloads
+vendor/qemu/arduino-data/
+vendor/qemu/arduino-downloads/
+vendor/qemu/arduino-user/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

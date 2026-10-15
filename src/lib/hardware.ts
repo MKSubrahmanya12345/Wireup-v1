@@ -6,7 +6,9 @@ export type WireEndpoint = { component: string; pin: string }
 export type HardwareWire = { id: string; from: WireEndpoint; to: WireEndpoint; color: string }
 export type Firmware = { filename: string; source: string; revision: number }
 export type HardwareArtifact = {
-  id: string; format: string; board: string; source_revision: number; project_revision: number; hex: string; url?: string
+  id: string; format: string; board: string; source_revision: number; project_revision: number
+  hex?: string; bin?: string; encoding?: string; load_address?: number; size_bytes?: number
+  chip?: string; image_kind?: string; flash_size_bytes?: number; url?: string
 }
 export type CompilerResult = {
   status: string; source_revision?: number; project_revision?: number; stdout?: string; stderr?: string
@@ -114,6 +116,17 @@ export const hardwareApi = {
         data,
       }),
     }, 15_000, 'Native ESP32 UART write'),
+  nativeGpio: (project: HardwareProject, runId: string, pin: number, level: boolean, options: HardwareRequestOptions = {}) =>
+    request<{ pin: number; level: boolean }>(`/projects/${encodeURIComponent(project.id)}/native/gpio`, {
+      method: 'POST', signal: options.signal, body: JSON.stringify({
+        runtime_token: project.runtime_token,
+        expected_revision: project.revision,
+        source_revision: project.firmware.revision,
+        run_id: runId,
+        pin,
+        level,
+      }),
+    }, 15_000, 'Native ESP32 GPIO input'),
 }
 
 export function catalogType(component: CatalogComponent): string {

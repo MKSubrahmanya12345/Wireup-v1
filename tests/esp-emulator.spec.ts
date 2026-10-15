@@ -11,6 +11,7 @@ for(const board of ['esp32-c3','esp32-s3'])test(`${board} boots real merged Ardu
  const result=await command('compile_firmware',{},650000)
  expect(result.artifact?.image_kind).toBe('merged-flash')
  await page.goto(`/project/${project.id}`)
+ await page.getByRole('button',{name:'Simulation',exact:true}).click()
  await expect(page.getByRole('button',{name:'Run',exact:true})).toBeEnabled({timeout:30000})
  await page.getByRole('button',{name:'Run',exact:true}).click()
  await expect(page.getByRole('button',{name:'Stop',exact:true})).toBeVisible({timeout:60000})

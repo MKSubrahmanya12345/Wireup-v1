@@ -1,0 +1,199 @@
+diff --git a/hw/gpio/esp32_gpio.c b/hw/gpio/esp32_gpio.c
+index 34f539c978..fd58aa470a 100644
+--- a/hw/gpio/esp32_gpio.c
++++ b/hw/gpio/esp32_gpio.c
+@@ -31,9 +31,15 @@ static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
+         case 0x04: //GPIO_OUT_REG
+             r = s->gpio_out;
+             break;
++        case 0x10: //GPIO_OUT1_REG
++            r = s->gpio_out1;
++            break;
+         case 0x20: //GPIO_ENABLE_REG
+             r = s->gpio_enable;
+             break;
++        case 0x2c: //GPIO_ENABLE1_REG
++            r = s->gpio_enable1;
++            break;
+         case 0x38: //A_GPIO_STRAP:
+             r = s->strap_mode;
+             break;
+@@ -140,9 +146,13 @@ static void esp32_gpio_write(void *opaque, hwaddr addr, uint64_t value,
+     Esp32GpioState *s = ESP32_GPIO(opaque);
+     int clearirq;
+     uint32_t oldvalue;
++    uint32_t oldvalue1;
+     uint32_t oldenable;
++    uint32_t oldenable1;
+     oldvalue = s->gpio_out;
++    oldvalue1 = s->gpio_out1;
+     oldenable = s->gpio_enable;
++    oldenable1 = s->gpio_enable1;
+     switch (addr) {
+         case 0x04: //GPIO_OUT_REG
+             s->gpio_out = value;
+@@ -153,6 +163,15 @@ static void esp32_gpio_write(void *opaque, hwaddr addr, uint64_t value,
+         case 0x0C: //GPIO_OUT_W1TC_REG 
+             s->gpio_out &= ~value;
+             break;
++        case 0x10: //GPIO_OUT1_REG
++            s->gpio_out1 = value;
++            break;
++        case 0x14: //GPIO_OUT1_W1TS_REG
++            s->gpio_out1 |= value;
++            break;
++        case 0x18: //GPIO_OUT1_W1TC_REG
++            s->gpio_out1 &= ~value;
++            break;
+         case 0x20: //GPIO_ENABLE_REG
+             s->gpio_enable = value;
+             break;
+@@ -162,6 +181,15 @@ static void esp32_gpio_write(void *opaque, hwaddr addr, uint64_t value,
+         case 0x28: //GPIO_ENABLE_W1TC_REG
+             s->gpio_enable &= ~value;
+             break;
++        case 0x2c: //GPIO_ENABLE1_REG
++            s->gpio_enable1 = value;
++            break;
++        case 0x30: //GPIO_ENABLE1_W1TS_REG
++            s->gpio_enable1 |= value;
++            break;
++        case 0x34: //GPIO_ENABLE1_W1TC_REG
++            s->gpio_enable1 &= ~value;
++            break;
+         case 0x38: //A_GPIO_STRAP
+             s->strap_mode = value;
+             break;
+@@ -242,6 +270,19 @@ static void esp32_gpio_write(void *opaque, hwaddr addr, uint64_t value,
+             }
+         }
+     }
++    if ((s->gpio_out1 != oldvalue1) || (s->gpio_enable1 != oldenable1)) {
++        uint32_t diff = (s->gpio_out1 ^ oldvalue1) | (s->gpio_enable1 ^ oldenable1);
++        for (int i = 0; i < 2; i++) {
++            if (((1U << i) & diff) && ((1U << i) & s->gpio_enable1)) {
++                qemu_set_irq(s->gpios[i + 32], (s->gpio_out1 & (1U << i)) ? 1 : 0);
++                if (s->gpio_out1 & (1U << i)) {
++                    s->gpio_in1 |= (1U << i);
++                } else {
++                    s->gpio_in1 &= ~(1U << i);
++                }
++            }
++        }
++    }
+     if (s->gpio_enable != oldenable) {
+         uint32_t diff =(s->gpio_enable ^ oldenable);
+         for (int i = 0; i < 32; i++) {
+@@ -250,6 +291,14 @@ static void esp32_gpio_write(void *opaque, hwaddr addr, uint64_t value,
+             }
+         }
+     }
++    if (s->gpio_enable1 != oldenable1) {
++        uint32_t diff = s->gpio_enable1 ^ oldenable1;
++        for (int i = 0; i < 2; i++) {
++            if ((1U << i) & diff) {
++                qemu_set_irq(s->gpios_dir[i + 32], (s->gpio_enable1 & (1U << i)) ? 1 : 0);
++            }
++        }
++    }
+ }
+ 
+ static const MemoryRegionOps gpio_ops = {
+@@ -279,8 +328,8 @@ static void esp32_gpio_init(Object *obj)
+     sysbus_init_mmio(sbd, &s->iomem);
+     sysbus_init_irq(sbd, &s->irq);
+     qdev_init_gpio_out_named(DEVICE(s), &s->irq, SYSBUS_DEVICE_GPIO_IRQ, 1);
+-    qdev_init_gpio_out_named(DEVICE(s), s->gpios, ESP32_GPIOS, 32);
+-    qdev_init_gpio_out_named(DEVICE(s), s->gpios_dir, ESP32_GPIOS_DIR, 32);
++    qdev_init_gpio_out_named(DEVICE(s), s->gpios, ESP32_GPIOS, 34);
++    qdev_init_gpio_out_named(DEVICE(s), s->gpios_dir, ESP32_GPIOS_DIR, 34);
+     qdev_init_gpio_out_named(DEVICE(s), s->gpios_sync, ESP32_GPIOS_SYNC, 1);
+     qdev_init_gpio_in_named(DEVICE(s), set_gpio, ESP32_GPIOS_IN, 40);
+     s->gpio_in = 0x1;
+diff --git a/hw/xtensa/esp32_picsimlab.c b/hw/xtensa/esp32_picsimlab.c
+index d8a199dd21..397af9ecf6 100644
+--- a/hw/xtensa/esp32_picsimlab.c
++++ b/hw/xtensa/esp32_picsimlab.c
+@@ -28,6 +28,7 @@
+ #include "hw/sd/dwc_sdmmc.h"
+ #include "core-esp32/core-isa.h"
+ #include "qemu/datadir.h"
++#include "qemu/main-loop.h"
+ #include "sysemu/sysemu.h"
+ #include "sysemu/reset.h"
+ #include "sysemu/cpus.h"
+@@ -175,7 +176,12 @@ uint32_t *qemu_picsimlab_get_internals(int cfg) {
+ void uart_receive(void *opaque, const uint8_t *buf, int size);
+ int uart_can_receive(void *opaque);
+ 
+-void qemu_picsimlab_uart_receive(const int id, const uint8_t *buf, int size){
++void qemu_picsimlab_uart_receive(const int id, const uint8_t *buf, int size)
++{
++   if (!global_s || id < 0 || id >= ESP32_UART_COUNT || !buf || size <= 0) {
++      return;
++   }
++   BQL_LOCK_GUARD();
+    uart_receive((void *) &global_s->uart[id], buf, size);
+ }
+ 
+@@ -231,21 +237,22 @@ void qemu_picsimlab_register_callbacks(void * arg)
+   picsimlab_rmt_event = callbacks->picsimlab_rmt_event;
+ }
+ 
+-void qemu_picsimlab_set_pin(int pin,int value)
++void qemu_picsimlab_set_pin(int pin, int value)
+ {
+-   //qemu_mutex_lock_iothread ();
+-   if (value){
+-      qemu_irq_raise (pin_irq[pin]);
++   if (pin < 0 || pin >= G_N_ELEMENTS(pin_irq) || !pin_irq[pin]) {
++      return;
+    }
+-   else{
+-      qemu_irq_lower (pin_irq[pin]);
+-   }
+-   //qemu_mutex_unlock_iothread ();
++   BQL_LOCK_GUARD();
++   qemu_set_irq(pin_irq[pin], value != 0);
+ }
+ 
+-void qemu_picsimlab_set_apin(int chn,int value)
++void qemu_picsimlab_set_apin(int chn, int value)
+ {
+-   Esp32SensState *s = ESP32_SENS(&(global_s->sens));  
++   if (!global_s || chn < 0 || chn >= G_N_ELEMENTS(global_s->sens.ADC_values)) {
++      return;
++   }
++   BQL_LOCK_GUARD();
++   Esp32SensState *s = ESP32_SENS(&(global_s->sens));
+    s->ADC_values[chn] = value;
+ }
+ 
+@@ -808,7 +815,7 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
+       pout_irq = qemu_allocate_irqs (pout_irq_handler, NULL, pinmap[0]+1);
+       for(int pin = 1; pin < (pinmap[0]+1); pin++){
+         if(pinmap[pin] >= 0 ){
+-           if(pinmap[pin]  < 32){
++           if(pinmap[pin] < 34){
+               qdev_connect_gpio_out_named(DEVICE(&s->gpio), ESP32_GPIOS, pinmap[pin], pout_irq[pin]);
+               qdev_connect_gpio_out_named(DEVICE(&s->gpio), ESP32_GPIOS_DIR, pinmap[pin] , pdir_irq[pin]);
+               pin_irq[pin]=qdev_get_gpio_in_named(DEVICE(&s->gpio), ESP32_GPIOS_IN, pinmap[pin]);
+diff --git a/include/hw/gpio/esp32_gpio.h b/include/hw/gpio/esp32_gpio.h
+index e1b8a866ca..695e573395 100644
+--- a/include/hw/gpio/esp32_gpio.h
++++ b/include/hw/gpio/esp32_gpio.h
+@@ -31,11 +31,12 @@ typedef struct Esp32GpioState {
+     uint32_t gpio_acpu_int;
+     uint32_t gpio_acpu_int1;
+     uint32_t gpio_enable;
++    uint32_t gpio_enable1;
+     uint32_t gpio_pin[40];
+     uint32_t gpio_in_sel[256];
+     uint32_t gpio_out_sel[40];
+-    qemu_irq gpios[32];
+-    qemu_irq gpios_dir[32];
++    qemu_irq gpios[34];
++    qemu_irq gpios_dir[34];
+     qemu_irq gpios_sync[1];
+ } Esp32GpioState;
+ 

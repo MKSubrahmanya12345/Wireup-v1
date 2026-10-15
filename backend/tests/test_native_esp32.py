@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import copy
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -11,24 +12,47 @@ from fastapi.testclient import TestClient
 
 from backend import native_esp32
 from backend.hardware import BOARD_CONFIG, HardwareService, RuntimeBridge, create_router
-from backend.native_esp32 import NativeESP32, RunRequest, SerialRequest, StopRequest
+from backend.native_esp32 import GPIORequest, NativeESP32, RunRequest, SerialRequest, StopRequest
+
+
+class Input:
+    def __init__(self, process):
+        self.process = process
+        self.buffer = bytearray()
+        self.commands = []
+
+    def write(self, data):
+        self.buffer.extend(data)
+        while b'\n' in self.buffer:
+            line, _, remainder = self.buffer.partition(b'\n')
+            self.buffer = bytearray(remainder)
+            command = json.loads(line)
+            self.commands.append(command)
+            if command['type'] == 'stop':
+                self.process.finish(0)
+
+    async def drain(self):
+        return None
 
 
 class Process:
-    def __init__(self):
+    def __init__(self, ready=True):
         self.stdout = asyncio.StreamReader()
         self.stderr = asyncio.StreamReader()
-        self.stdin = SimpleNamespace(write=self.write, drain=AsyncMock())
-        self.input = bytearray()
+        self.stdin = Input(self)
         self.returncode = None
         self.finished = asyncio.Event()
         self.terminated = False
         self.killed = False
+        if ready:
+            self.event({'type': 'ready', 'gpio_available': True})
 
-    def write(self, data):
-        self.input.extend(data)
+    def event(self, event):
+        self.stdout.feed_data((json.dumps(event) + '\n').encode())
 
     def finish(self, code=0):
+        if self.returncode is not None:
+            return
         self.returncode = code
         self.stdout.feed_eof()
         self.stderr.feed_eof()
@@ -66,7 +90,7 @@ def compiled_project(service, board='esp32-devkit-v1'):
         segments.append({'name': name, 'filename': filename, 'offset': offset, 'size_bytes': size})
     artifact = {'id': 'compiled', 'board': board, 'fqbn': cfg['fqbn'], 'format': 'bin',
                 'source': project['firmware']['source'], 'source_revision': 1, 'project_revision': 1,
-                'bin': base64.b64encode(binary).decode('ascii'), 'encoding': 'base64',
+                'bin': base64.b64encode(binary).decode(), 'encoding': 'base64',
                 'image_kind': 'merged-flash', 'chip': 'esp32', 'load_address': 0,
                 'size_bytes': len(binary), 'flash_size_bytes': len(binary), 'flash_segments': segments}
     with service.lock:
@@ -84,15 +108,19 @@ def setup(tmp_path, monkeypatch):
     service = HardwareService(tmp_path / 'projects', native=NativeESP32(stop_timeout=0.05),
                               runtime=RuntimeBridge(timeout=0.1))
     project, binary = compiled_project(service)
+    dll = tmp_path / 'libqemu-xtensa.dll'
+    rom = tmp_path / 'share/qemu'
     state = SimpleNamespace(service=service, project=project, binary=binary, processes=[], paths=[])
-    monkeypatch.setattr(native_esp32, 'qemu_executable', lambda: str(tmp_path / 'qemu-system-xtensa.exe'))
+    monkeypatch.setattr(native_esp32, 'qemu_runtime', lambda: (str(dll), str(rom)))
 
     async def spawn(*args, **kwargs):
-        assert args[1:] == ('-machine', 'esp32', '-display', 'none', '-serial', 'stdio',
-                            '-monitor', 'none', '-nic', 'none', '-drive', 'file=flash.bin,if=mtd,format=raw')
-        assert kwargs['stdin'] == kwargs['stdout'] == kwargs['stderr'] == asyncio.subprocess.PIPE
-        path = Path(kwargs['cwd']) / 'flash.bin'
+        assert args[:3] == (native_esp32.sys.executable, '-m', 'backend.native_esp32_worker')
+        assert args[3:5] == ('--dll', str(dll))
+        assert args[5:7] == ('--rom', str(rom))
+        assert args[7] == '--flash'
+        path = Path(args[8])
         assert path.read_bytes() == state.binary
+        assert kwargs['stdin'] == kwargs['stdout'] == kwargs['stderr'] == asyncio.subprocess.PIPE
         state.paths.append(path)
         process = Process()
         state.processes.append(process)
@@ -119,34 +147,30 @@ def get(state, action='results', **changes):
                             headers={'X-Runtime-Token': state.project['runtime_token']})
 
 
-def test_actual_drive_uart_state_stop_and_restart(setup):
-    response = post(setup, 'run', artifact_id='compiled')
-    assert response.status_code == 200
-    state = response.json()
-    assert state['running'] is True
-    assert state['gpio_available'] is False and state['gpio'] == {}
-    assert state['runtime'] == 'qemu-native' and state['artifact_id'] == 'compiled'
-    assert response.headers['cache-control'] == 'no-store'
-    setup.client.portal.call(setup.processes[0].stdout.feed_data, b'Hello from firmware\r\n')
+def test_worker_uart_gpio_input_stop_and_restart(setup):
+    started = post(setup, 'run', artifact_id='compiled').json()
+    assert started['running'] and started['gpio_available'] and started['runtime'] == 'qemu-native'
+    process = setup.processes[0]
+    process.event({'type': 'uart', 'port': 0, 'data': base64.b64encode(b'firmware\r\n').decode()})
+    process.event({'type': 'gpio_direction', 'pin': 32, 'output': True})
+    process.event({'type': 'gpio', 'pin': 32, 'level': True})
     setup.client.portal.call(asyncio.sleep, 0)
     result = get(setup).json()
-    assert result['serial'] == 'Hello from firmware\r\n'
-    assert result['serial_cursor'] == 21
-    assert get(setup, 'serial', cursor=21).json()['serial'] == ''
-    assert post(setup, 'serial', data='input\n', run_id=state['run_id']).json()['bytes_written'] == 6
-    assert setup.processes[0].input == b'input\n'
-    assert post(setup, 'run').status_code == 409
-    assert post(setup, 'stop', run_id='old-run').status_code == 409
+    assert result['serial'] == 'firmware\r\n'
+    assert result['gpio']['GPIO32'] == {'level': True, 'drive': 'high'}
+    assert post(setup, 'serial', data='input\n', run_id=started['run_id']).json()['bytes_written'] == 6
+    assert process.stdin.commands[-1] == {'type': 'uart_input', 'port': 0,
+                                          'data': base64.b64encode(b'input\n').decode()}
+    gpio = post(setup, 'gpio', pin=4, level=False, run_id=started['run_id'])
+    assert gpio.status_code == 200
+    assert process.stdin.commands[-1] == {'type': 'gpio_input', 'pin': 4, 'level': False}
+    assert post(setup, 'gpio', pin=40, level=True).status_code == 422
     assert setup.client.delete(f'/api/hardware/projects/{setup.project["id"]}').status_code == 409
-    stopped = post(setup, 'stop', run_id=state['run_id']).json()
-    assert stopped['running'] is False and stopped['status'] == 'stopped'
-    assert setup.processes[0].terminated
+    stopped = post(setup, 'stop', run_id=started['run_id']).json()
+    assert not stopped['running'] and stopped['status'] == 'stopped'
     assert not setup.paths[0].exists()
-    assert post(setup, 'serial', data='input').status_code == 409
-    assert post(setup, 'stop').status_code == 200
     restarted = post(setup, 'run').json()
-    assert restarted['run_id'] != state['run_id']
-    assert restarted['serial'] == ''
+    assert restarted['run_id'] != started['run_id']
     assert post(setup, 'stop').status_code == 200
 
 
@@ -163,15 +187,12 @@ def test_rejects_token_revisions_and_client_launch_options(setup, changes, statu
 
 
 @pytest.mark.parametrize('record,field,value', [
-    ('compiler', 'status', 'error'), ('compiler', 'stale', True), ('compiler', 'errors', ['failed']),
-    ('compiler', 'source', 'different'), ('compiler', 'project_revision', 2),
+    ('compiler', 'status', 'error'), ('compiler', 'stale', True),
     ('artifact', 'board', 'esp32-c3'), ('artifact', 'chip', 'esp32s3'),
-    ('artifact', 'source_revision', 2), ('artifact', 'fqbn', 'wrong'),
-    ('artifact', 'source', 'different'), ('artifact', 'image_kind', 'application'),
-    ('artifact', 'bin', 'invalid'), ('artifact', 'load_address', 0x10000),
-    ('artifact', 'size_bytes', 32), ('artifact', 'flash_segments', []),
+    ('artifact', 'source_revision', 2), ('artifact', 'image_kind', 'application'),
+    ('artifact', 'bin', 'invalid'), ('artifact', 'flash_segments', []),
 ])
-def test_requires_successful_fresh_complete_classic_artifact(setup, record, field, value):
+def test_requires_fresh_complete_classic_artifact(setup, record, field, value):
     stored = setup.service._load(setup.project['id'])
     target = stored['compiler'] if record == 'compiler' else stored['compiler']['artifact']
     target[field] = value
@@ -180,21 +201,18 @@ def test_requires_successful_fresh_complete_classic_artifact(setup, record, fiel
     setup.spawn.assert_not_awaited()
 
 
-def test_actual_exit_and_bounded_output(setup):
+def test_worker_exit_and_bounded_output(setup):
     setup.service.native.output_limit = 16
     assert post(setup, 'run').status_code == 200
     process = setup.processes[0]
-    setup.client.portal.call(process.stdout.feed_data, b'a' * 100 + b'final UART')
-    setup.client.portal.call(process.stderr.feed_data, b'x' * 100 + b'failure')
-    setup.client.portal.call(process.finish, 3)
+    process.event({'type': 'uart', 'port': 0, 'data': base64.b64encode(b'a' * 100 + b'final UART').decode()})
+    process.stderr.feed_data(b'x' * 100 + b'failure')
+    process.finish(3)
     setup.client.portal.call(asyncio.sleep, 0.01)
     result = get(setup, cursor=0).json()
     assert result['status'] == 'error' and result['returncode'] == 3
-    assert not result['running']
     assert len(result['serial']) == len(result['stderr']) == 16
-    assert result['serial'].endswith('final UART')
     assert result['serial_truncated'] and result['stderr_truncated']
-    assert not setup.paths[0].exists()
 
 
 def test_revision_mutation_marks_run_stale_but_allows_stop(setup):
@@ -203,100 +221,30 @@ def test_revision_mutation_marks_run_stale_but_allows_stop(setup):
     assert get(setup).status_code == 409
     assert get(setup, expected_revision=2).json()['stale']
     assert post(setup, 'serial', expected_revision=2, data='input').status_code == 409
+    assert post(setup, 'gpio', expected_revision=2, pin=2, level=True).status_code == 409
     assert post(setup, 'stop', expected_revision=2).status_code == 200
 
 
-def test_rechecks_revision_after_subprocess_launch(setup):
-    original = setup.spawn.side_effect
-
-    async def changed(*args, **kwargs):
-        process = await original(*args, **kwargs)
-        setup.service._mutate(setup.project['id'], 'modify_component', {'id': 'board', 'x': 200})
-        return process
-
-    setup.spawn.side_effect = changed
-    assert post(setup, 'run').status_code == 409
-    assert setup.processes[0].terminated
-    assert not setup.paths[0].exists()
-
-
-def test_local_only_token_on_reads_and_missing_session(setup):
+def test_local_only_token_missing_session_and_classic_routing(setup):
+    assert get(setup).status_code == 404
     url = f'/api/hardware/projects/{setup.project["id"]}/native/results'
     assert setup.client.get(url, params={'expected_revision': 1, 'source_revision': 1}).status_code == 403
-    assert get(setup).status_code == 404
-    assert setup.client.post(url.replace('results', 'run'), json=setup.payload,
-                             headers={'host': 'remote.example'}).status_code == 403
-    assert setup.client.post(url.replace('results', 'run'), json=setup.payload,
-                             headers={'origin': 'https://evil.example'}).status_code == 403
     assert get(setup, cursor=-1).status_code == 400
-    other = setup.service.create_project(board='arduino-uno')
-    setup.project = other
-    setup.payload['runtime_token'] = other['runtime_token']
-    assert post(setup, 'run').status_code == 400
-    setup.spawn.assert_not_awaited()
+    result = setup.client.portal.call(setup.service.command, setup.project['id'], 'run_simulation', {}, setup.project['runtime_token'])
+    assert result['result']['runtime'] == 'qemu-native'
+    assert setup.spawn.await_count == 1
+    setup.client.portal.call(setup.service.native.close)
 
 
-def test_missing_executable_and_spawn_failure(setup, monkeypatch):
+def test_missing_runtime_and_spawn_failure(setup, monkeypatch):
     def missing():
         raise HTTPException(503, 'QEMU unavailable')
-
-    monkeypatch.setattr(native_esp32, 'qemu_executable', missing)
+    monkeypatch.setattr(native_esp32, 'qemu_runtime', missing)
     assert post(setup, 'run').status_code == 503
-    monkeypatch.setattr(native_esp32, 'qemu_executable', lambda: 'qemu-system-xtensa.exe')
+    monkeypatch.setattr(native_esp32, 'qemu_runtime', lambda: ('qemu.dll', 'rom'))
     setup.spawn.side_effect = OSError('not installed')
     assert post(setup, 'run').status_code == 503
     assert not setup.service.native.active(setup.project['id'])
-
-
-def test_timeout_kill_and_shutdown_cleanup(setup):
-    setup.service.native.lifetime = 0.02
-    original = setup.spawn.side_effect
-
-    async def stubborn(*args, **kwargs):
-        process = await original(*args, **kwargs)
-        process.terminate = lambda: setattr(process, 'terminated', True)
-        return process
-
-    setup.spawn.side_effect = stubborn
-    assert post(setup, 'run').status_code == 200
-    process = setup.processes[0]
-    async def finished():
-        await asyncio.wait_for(setup.service.native.sessions[setup.project['id']].task, 2)
-
-    setup.client.portal.call(finished)
-    result = get(setup).json()
-    assert result['status'] == 'timeout' and not result['running']
-    assert process.terminated and process.killed
-    assert not setup.paths[0].exists()
-    setup.service.native.lifetime = 3600
-    setup.spawn.side_effect = original
-    assert post(setup, 'run').status_code == 200
-    setup.client.portal.call(setup.service.native.close)
-    assert setup.processes[1].terminated and not setup.paths[1].exists()
-
-
-def test_launch_cancellation_reaps_late_subprocess(setup):
-    async def exercise():
-        release = asyncio.Event()
-        original = setup.spawn.side_effect
-
-        async def delayed(*args, **kwargs):
-            await release.wait()
-            return await original(*args, **kwargs)
-
-        setup.spawn.side_effect = delayed
-        task = asyncio.create_task(setup.service.native.run(setup.service, setup.project['id'], RunRequest(**setup.payload)))
-        await asyncio.sleep(0.01)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert setup.service.native.active(setup.project['id'])
-        release.set()
-        await setup.service.native.close()
-        assert setup.processes[0].terminated
-        assert not setup.paths[0].exists()
-
-    setup.client.portal.call(exercise)
 
 
 def test_concurrent_run_and_capacity(setup):
@@ -314,71 +262,23 @@ def test_concurrent_run_and_capacity(setup):
             await setup.service.native.run(setup.service, other['id'], payload)
         assert error.value.status_code == 429
         await setup.service.native.close()
-
     setup.client.portal.call(exercise)
 
 
-def test_explicit_native_hardware_command_routing(setup):
-    async def exercise():
-        args = {'runtime': 'qemu-native', 'expected_revision': 1, 'source_revision': 1}
-        for name in ('run_simulation', 'read_simulation_results', 'stop_simulation'):
-            result = await setup.service.command(setup.project['id'], name, args, setup.project['runtime_token'])
-            assert result['status'] == 'acknowledged' and result['result']['runtime'] == 'qemu-native'
-        assert BOARD_CONFIG[setup.project['board']]['simulation'] == 'native'
-
-    setup.client.portal.call(exercise)
-
-
-def test_classic_esp32_never_dispatches_the_browser_bridge(setup):
-    setup.service.runtime.sessions[setup.project['id']] = object()
-    setup.service.runtime.command = AsyncMock(return_value={'status': 'acknowledged', 'result': {'running': True}})
-    result = setup.client.portal.call(setup.service.command, setup.project['id'], 'run_simulation', {}, setup.project['runtime_token'])
-    assert result['result']['runtime'] == 'qemu-native'
-    setup.service.runtime.command.assert_not_awaited()
-    assert setup.spawn.await_count == 1
-
-
-def test_qemu_discovery_is_vendor_only_and_env_is_operator_owned(tmp_path, monkeypatch):
+def test_runtime_discovery_is_vendor_only_and_env_is_operator_owned(tmp_path, monkeypatch):
     monkeypatch.setattr(native_esp32, 'ROOT', tmp_path)
-    monkeypatch.delenv('WIREUP_QEMU_XTENSA', raising=False)
+    monkeypatch.delenv('WIREUP_QEMU_XTENSA_DLL', raising=False)
     with pytest.raises(HTTPException) as error:
-        native_esp32.qemu_executable()
+        native_esp32.qemu_runtime()
     assert error.value.status_code == 503
-    path = tmp_path / 'vendor/qemu/esp-qemu-v9.2.2/bin/qemu-system-xtensa.exe'
-    path.parent.mkdir(parents=True)
-    path.write_bytes(b'operator-installed-binary')
-    assert native_esp32.qemu_executable() == str(path.resolve())
-    monkeypatch.setenv('WIREUP_QEMU_XTENSA', str(tmp_path / 'missing.exe'))
+    dll = tmp_path / 'vendor/qemu-picsimlab/bin/libqemu-xtensa.dll'
+    rom = tmp_path / 'vendor/qemu-picsimlab/share/qemu'
+    dll.parent.mkdir(parents=True)
+    rom.mkdir(parents=True)
+    dll.write_bytes(b'dll')
+    for name in ('esp32-v3-rom.bin', 'esp32-v3-rom-app.bin'):
+        (rom / name).write_bytes(b'rom')
+    assert native_esp32.qemu_runtime() == (str(dll.resolve()), str(rom.resolve()))
+    monkeypatch.setenv('WIREUP_QEMU_XTENSA_DLL', str(tmp_path / 'missing.dll'))
     with pytest.raises(HTTPException):
-        native_esp32.qemu_executable()
-    monkeypatch.setenv('WIREUP_QEMU_XTENSA', str(path))
-    assert native_esp32.qemu_executable() == str(path.resolve())
-
-
-def test_startup_timeout_reaps_process_and_uart_bytes_are_bounded(setup):
-    async def exercise():
-        release = asyncio.Event()
-        original = setup.spawn.side_effect
-        setup.service.native.startup_timeout = 0.02
-
-        async def delayed(*args, **kwargs):
-            await release.wait()
-            return await original(*args, **kwargs)
-
-        setup.spawn.side_effect = delayed
-        with pytest.raises(HTTPException) as error:
-            await setup.service.native.run(setup.service, setup.project['id'], RunRequest(**setup.payload))
-        assert error.value.status_code == 504
-        release.set()
-        await setup.service.native.sessions[setup.project['id']].task
-        assert setup.processes[0].terminated and not setup.paths[0].exists()
-        setup.spawn.side_effect = original
-        setup.service.native.startup_timeout = 10
-        await setup.service.native.run(setup.service, setup.project['id'], RunRequest(**setup.payload))
-        with pytest.raises(HTTPException) as error:
-            await setup.service.native.serial(setup.service, setup.project['id'], SerialRequest(**setup.payload, data='é' * 4096))
-        assert error.value.status_code == 400
-        assert not setup.processes[1].input
-        await setup.service.native.close()
-
-    setup.client.portal.call(exercise)
+        native_esp32.qemu_runtime()

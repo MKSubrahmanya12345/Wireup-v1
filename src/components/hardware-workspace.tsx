@@ -57,7 +57,9 @@ const NATIVE_ESP32_BOARDS = new Set(['esp32-devkit-v1', 'esp32-devkit-c-v4'])
 
 type NativeEsp32State = {
   running: boolean; runtime: string; artifact_id: string; serial: string; status: string
-  run_id: string; gpio_available: boolean; gpio: Record<string, unknown>; simulation_scope: string; error?: string | null
+  run_id: string; gpio_available: boolean
+  gpio: Record<string, { level: boolean | null; drive: string }>
+  simulation_scope: string; error?: string | null
 }
 
 function nativeEsp32Results(state: NativeEsp32State): RuntimeResults {
@@ -69,12 +71,12 @@ function nativeEsp32Results(state: NativeEsp32State): RuntimeResults {
     simulated_ms: 0,
     serial: state.serial,
     serial_link: null,
-    pins: {},
+    pins: state.gpio,
     limitations: [state.simulation_scope],
     state: state.status,
     error: state.error,
     run_id: state.run_id,
-    support_warnings: state.gpio_available ? [] : ['Classic ESP32 GPIO and connected circuit components are not simulated by this runtime.'],
+    support_warnings: state.gpio_available ? [] : ['Classic ESP32 GPIO is unavailable in this runtime.'],
   }
 }
 
@@ -171,6 +173,16 @@ export function HardwareWorkspace({ chatSlot, children, onProjectChange, schemat
   useEffect(() => { onRuntimeChange?.(runtime); return () => onRuntimeChange?.(null) }, [runtime, onRuntimeChange])
   const [results, setResults] = useState<RuntimeResults | null>(null)
   useEffect(() => { onResultsChange?.(results) }, [results, onResultsChange])
+  const acceptNativeState = useCallback((state: NativeEsp32State) => {
+    const converted = nativeEsp32Results(state)
+    setResults(converted)
+    const current = projectRef.current
+    runtimeRef.current?.applyNativeState(converted.pins, state.running, current && state.run_id ? (pin, level) => {
+      void hardwareApi.nativeGpio(current, state.run_id, pin, level).catch(error => {
+        setError(error instanceof Error ? error.message : 'Unable to send native ESP32 GPIO input.')
+      })
+    } : null)
+  }, [])
   useEffect(() => {
     if (results?.engine !== 'qemu-native' || !results.running || !results.run_id) return
     let active = true
@@ -185,14 +197,14 @@ export function HardwareWorkspace({ chatSlot, children, onProjectChange, schemat
           source_revision: current.firmware.revision,
           run_id: results.run_id,
         })
-        if (active) setResults(nativeEsp32Results(response.result))
+        if (active) acceptNativeState(response.result)
       } catch (error) {
         if (active) setError(error instanceof Error ? error.message : 'Unable to read the native ESP32 runtime.')
       } finally { inFlight = false }
     }
     const timer = setInterval(() => void refresh(), 250)
     return () => { active = false; clearInterval(timer) }
-  }, [results?.engine, results?.running, results?.run_id])
+  }, [results?.engine, results?.running, results?.run_id, acceptNativeState])
   const [compiler, setCompiler] = useState<CompilerResult | null>(null)
   const [pins, setPins] = useState<Record<string, HardwarePin[]>>({})
   const [partSizes, setPartSizes] = useState<Record<string, { width: number; height: number }>>({})
@@ -578,7 +590,7 @@ export function HardwareWorkspace({ chatSlot, children, onProjectChange, schemat
       source_revision: current.firmware.revision,
       artifact_id: current.compiler?.artifact?.id,
     } : {}) as { result?: NativeEsp32State }
-    if (response.result?.runtime === 'qemu-native') setResults(nativeEsp32Results(response.result))
+    if (response.result?.runtime === 'qemu-native') acceptNativeState(response.result)
     setDock('results')
     setConsoleOpen(true)
   })
@@ -589,7 +601,7 @@ export function HardwareWorkspace({ chatSlot, children, onProjectChange, schemat
       source_revision: current.firmware.revision,
       run_id: results.run_id,
     } : {}) as { result?: NativeEsp32State }
-    if (response.result?.runtime === 'qemu-native') setResults(nativeEsp32Results(response.result))
+    if (response.result?.runtime === 'qemu-native') acceptNativeState(response.result)
   })
   const changeView = (next: HardwareWorkspaceView) => { setLocalView(next); onViewChange?.(next); setTab('circuit') }
   const fitCanvas = () => {
@@ -709,7 +721,7 @@ export function HardwareWorkspace({ chatSlot, children, onProjectChange, schemat
           <section className="hw-dock" data-open={consoleOpen} style={{ '--hw-dock': `${layout.dock}px` } as CSSProperties}>{consoleOpen && <div className="hw-resizer hw-resizer-row" data-active={resizing === 'dock'} role="separator" aria-orientation="horizontal" aria-label="Resize console height" onPointerDown={startResize('dock')} />}<nav aria-label="Output panels">{(['compiler', 'serial', 'results', 'tools'] as const).map(value => <button key={value} aria-expanded={consoleOpen && dock === value} className={consoleOpen && dock === value ? 'active' : ''} onClick={() => { setDock(value); setConsoleOpen(true) }}>{value === 'serial' ? <Terminal size={13} /> : value === 'compiler' ? <Wrench size={13} /> : value === 'results' ? <Zap size={13} /> : <Cpu size={13} />}{value === 'compiler' ? 'Compiler' : value === 'serial' ? 'Serial monitor' : value === 'results' ? 'Results' : 'Tools'}</button>)}<button className="hw-connect-board" disabled={!!busy || project.board === 'unselected' || project.board.startsWith('raspberry-pi-') || project.board === 'pi-pico' || project.board === 'pi-pico-w'} onClick={() => setFlashOpen(true)}><Cable size={13}/>Connect board &amp; flash</button>{connection !== 'Connected' && <button onClick={() => setSession(value => value + 1)} disabled={!!busy}>Reconnect</button>}<span className="hw-dock-status"><span title={`Project r${project.revision} · ${dirty ? 'Unsaved editor changes' : 'Server saved'}`}>Runtime: {connection}</span>{busy && <LoaderCircle size={12} className="hw-spin" />}{busy || compiler?.status?.replaceAll('_', ' ') || 'Not compiled'}</span><button className="hw-console-collapse" aria-label={consoleOpen ? 'Collapse console' : 'Expand console'} aria-expanded={consoleOpen} onClick={() => setConsoleOpen(!consoleOpen)}><ChevronDown size={14} /></button></nav>
             {consoleOpen && dock === 'compiler' && <div className="hw-dock-body"><div className="hw-output-actions"><button disabled={!!busy} onClick={() => void perform('Reading compiler errors', async () => { setCompiler(await command('read_compiler_errors') as CompilerResult) })}><RefreshCw size={12} /> Read diagnostics</button>{compiler?.artifact?.url && <a href={compiler.artifact.url} download>Download {compiler.artifact.format === 'hex' ? 'HEX' : 'BIN'}</a>}</div><pre>{compiler ? [compiler.stdout, compiler.stderr, ...(compiler.errors ?? []).map(value => typeof value === 'string' ? value : JSON.stringify(value))].filter(Boolean).join('\n') || compiler.status : 'Ready when you are. Compile your sketch to create real Arduino firmware.\nCompilation does not start the simulator.'}</pre></div>}
             {consoleOpen && dock === 'serial' && <div className="hw-dock-body"><pre aria-label="Serial output">{results?.serial || 'No serial output yet. Your sketch must call Serial.begin() and Serial.print().'}</pre><form className="hw-serial-send" onSubmit={event => { event.preventDefault(); const data = serialInput + '\n'; if (results?.engine === 'qemu-native' && results.run_id && projectRef.current) { void perform('Sending UART input', async () => { await hardwareApi.nativeSerial(projectRef.current!, results.run_id!, data); setSerialInput('') }) } else { try { runtime?.sendSerial(data); setSerialInput('') } catch (error) { setError((error as Error).message) } } }}><input aria-label="Serial input" value={serialInput} placeholder="Send to UART…" onChange={event => setSerialInput(event.target.value)} /><button disabled={!results?.running || !serialInput}>Send</button></form></div>}
-            {consoleOpen && dock === 'results' && <div className="hw-dock-body"><div className="hw-output-actions"><button disabled={!!busy || (selectedBoard?.simulation !== 'native' && connection !== 'Connected')} onClick={() => void perform('Reading simulation results', async () => { const value = await command('read_simulation_results', results?.engine === 'qemu-native' ? { run_id: results.run_id } : {}) as { result: RuntimeResults | NativeEsp32State }; if (value.result) setResults('runtime' in value.result && value.result.runtime === 'qemu-native' ? nativeEsp32Results(value.result) : value.result as RuntimeResults) })}><RefreshCw size={12} /> Read runtime</button><span>{results?.cycles.toLocaleString() ?? '0'} cycles · {(results?.simulated_ms ?? 0).toFixed(1)} ms simulated</span></div><div className="hw-pin-results">{Object.entries(results?.pins ?? {}).map(([pin, value]) => <span key={pin} data-level={value.level === true ? 'high' : value.level === false ? 'low' : 'floating'}>{pin}<b>{value.level === null ? '—' : value.level ? 'HIGH' : 'LOW'}</b></span>)}</div><p className="hw-runtime-limit">{results?.limitations.join(' ') ?? 'Real Velxio board CPU / UART / GPIO. Runtime-specific peripheral support is reported after simulation starts. No analog-current measurements are claimed.'}</p>{results?.support_warnings?.map(warning => <p className="hw-runtime-limit" key={warning}>{warning}</p>)}</div>}
+            {consoleOpen && dock === 'results' && <div className="hw-dock-body"><div className="hw-output-actions"><button disabled={!!busy || (selectedBoard?.simulation !== 'native' && connection !== 'Connected')} onClick={() => void perform('Reading simulation results', async () => { const value = await command('read_simulation_results', results?.engine === 'qemu-native' ? { run_id: results.run_id } : {}) as { result: RuntimeResults | NativeEsp32State }; if (value.result) { if ('runtime' in value.result && value.result.runtime === 'qemu-native') acceptNativeState(value.result); else setResults(value.result as RuntimeResults) } })}><RefreshCw size={12} /> Read runtime</button><span>{results?.cycles.toLocaleString() ?? '0'} cycles · {(results?.simulated_ms ?? 0).toFixed(1)} ms simulated</span></div><div className="hw-pin-results">{Object.entries(results?.pins ?? {}).map(([pin, value]) => <span key={pin} data-level={value.level === true ? 'high' : value.level === false ? 'low' : 'floating'}>{pin}<b>{value.level === null ? '—' : value.level ? 'HIGH' : 'LOW'}</b></span>)}</div><p className="hw-runtime-limit">{results?.limitations.join(' ') ?? 'Real Velxio board CPU / UART / GPIO. Runtime-specific peripheral support is reported after simulation starts. No analog-current measurements are claimed.'}</p>{results?.support_warnings?.map(warning => <p className="hw-runtime-limit" key={warning}>{warning}</p>)}</div>}
             {consoleOpen && dock === 'tools' && <div className="hw-dock-body"><div className="hw-manual-tools"><button disabled={!!busy} onClick={() => void perform('Reading project', async () => { const value = await command('read_project'); setToolOutput(JSON.stringify(value, null, 2)) })}>Read project</button><button disabled={!!busy} onClick={() => void perform('Reading firmware', async () => { const value = await command('read_firmware') as Firmware; setToolOutput(JSON.stringify(value, null, 2)) })}>Read firmware</button><button disabled={!!busy || !!results?.running} onClick={() => void perform('Generating firmware', async () => { const current = projectRef.current!; const next = await hardwareApi.command<HardwareProject>(current, 'generate_firmware', { source: sourceRef.current, expected_revision: dirty ? draftRevision.current ?? current.revision : current.revision }); acceptProject(next, true); setNotice('Current editor source stored through generate_firmware.') })}>Generate from editor</button><button disabled={!!busy} onClick={() => void perform('Searching components', async () => { const value = await command('search_components', { query, limit: 50 }); setToolOutput(JSON.stringify(value, null, 2)) })}>Search catalog</button></div><form className="hw-calculator" onSubmit={event => { event.preventDefault(); void perform('Calculating', async () => { const value = await command('calculator', { expression }); setToolOutput(JSON.stringify(value, null, 2)) }) }}><input aria-label="Calculator expression" value={expression} onChange={event => setExpression(event.target.value)} placeholder="(5 - 2) / 0.02" /><button disabled={!!busy || !expression}>Calculate</button></form><pre aria-label="Tool result">{toolOutput || 'All manual tools use the same canonical backend service as the agent.'}</pre></div>}
           </section>
         </section>

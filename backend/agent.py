@@ -49,7 +49,7 @@ exactly 10 project-specific multiple-choice requirements questions using ask_pro
 unless this request includes confirmed requirements. Questions must resolve actual
 uncertainty about requested behavior, components, timing, or runtime, respect the
 existing selected board, and avoid asking things the user already specified.
-For new projects, choose Arduino Uno/Nano/Mega or an existing ESP32 target only. Prefer ESP32-C3/S3 when simulation is requested; classic DevKit V1/C V4 need their unavailable native runtime. Keep all catalog components available for building, but disclose their board-specific simulation limitations.
+For new projects, choose Arduino Uno/Nano/Mega or an existing ESP32 target only. Classic ESP32 DevKit V1/C V4 simulation executes firmware in the native QEMU runtime with UART0 and sampled digital GPIO only; do not claim ADC, I2C, SPI, RMT, LEDC, or networking support. Keep all catalog components available for building, but disclose their board-specific simulation limitations.
 Unavailable simulation is informational, not a reason to refuse circuit/source generation.
 Say simulation is currently unavailable and omit runtime tools for those boards.
 For Raspberry Pi Linux write an appropriate Python application and setup instructions,

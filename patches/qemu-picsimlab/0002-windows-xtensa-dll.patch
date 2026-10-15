@@ -1,0 +1,56 @@
+diff --git a/meson.build b/meson.build
+index 7f28871776..0000000000 100644
+--- a/meson.build
++++ b/meson.build
+@@ -7,7 +7,9 @@ add_test_setup('quick', exclude_suites: ['slow', 'thorough'], is_default: true)
+ add_test_setup('slow', exclude_suites: ['thorough'], env: ['G_TEST_SLOW=1', 'SPEED=slow'])
+ add_test_setup('thorough', env: ['G_TEST_SLOW=1', 'SPEED=thorough'])
+ 
+-meson.add_postconf_script(find_program('scripts/symlink-install-tree.py'))
++if host_machine.system() != 'windows'
++  meson.add_postconf_script(find_program('scripts/symlink-install-tree.py'))
++endif
+ 
+ ####################
+ # Global variables #
+@@ -4245,6 +4247,17 @@ foreach target : target_dirs
+                  c_args: c_args,
+                  build_by_default: false)
+ 
++  if host_os == 'windows' and target == 'xtensa-softmmu'
++    shared_library('qemu-xtensa',
++                   name_prefix: 'lib',
++                   install: false,
++                   dependencies: arch_deps,
++                   objects: lib.extract_all_objects(recursive: true),
++                   link_depends: [block_syms, qemu_syms],
++                   link_args: link_args,
++                   vs_module_defs: 'qemu-xtensa.def')
++  endif
++
+   if target.endswith('-softmmu')
+     execs = [{
+       'name': 'qemu-system-' + target_name,
+diff --git a/qemu-xtensa.def b/qemu-xtensa.def
+new file mode 100644
+index 0000000000..8ff1c8291a
+--- /dev/null
++++ b/qemu-xtensa.def
+@@ -0,0 +1,17 @@
++EXPORTS
++    qemu_init
++    qemu_main_loop
++    qemu_cleanup
++    qemu_system_shutdown_request
++    bql_lock_impl
++    bql_unlock
++    qemu_picsimlab_register_callbacks
++    qemu_picsimlab_set_pin
++    qemu_picsimlab_set_apin
++    qemu_picsimlab_flash_dump
++    qemu_picsimlab_uart_receive
++    qemu_picsimlab_get_internals
++    qemu_picsimlab_get_TIOCM
++    qemu_clock_get_ns
++    timer_init_full
++    timer_mod_ns

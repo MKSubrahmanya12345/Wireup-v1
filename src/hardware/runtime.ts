@@ -36,6 +36,7 @@ const RP2040Simulator = picoModules['../../vendor/velxio/frontend/src/simulation
 const SAMPLE_CAPACITY = 8192
 const AVR_BOARDS = new Set(['arduino-uno', 'arduino-nano', 'arduino-mega'])
 const PICO_BOARDS = new Set(['pi-pico', 'pi-pico-w'])
+const CLASSIC_ESP32_BOARDS = new Set(['esp32-devkit-v1', 'esp32-devkit-c-v4'])
 const activeRuntimes = new Set<HardwareRuntime>()
 
 export function connectedEndpoints(project: HardwareProject, endpoint: WireEndpoint): WireEndpoint[] {
@@ -57,6 +58,20 @@ export function connectedEndpoints(project: HardwareProject, endpoint: WireEndpo
 }
 
 export function boardPin(board: string, name: string): number | null {
+  if (CLASSIC_ESP32_BOARDS.has(board)) {
+    if (name === 'TX' || name === 'TX0') return 1
+    if (name === 'RX' || name === 'RX0') return 3
+    if (name === 'TX2') return 17
+    if (name === 'RX2') return 16
+    if (name === 'VP') return 36
+    if (name === 'VN') return 39
+    if (board === 'esp32-devkit-c-v4' && (/^D[0-3]$/.test(name) || name === 'CMD' || name === 'CLK')) return null
+    if (/^(?:GPIO|D)?\d+$/.test(name)) {
+      const pin = Number(name.replace(/^(?:GPIO|D)/, ''))
+      return pin >= 0 && pin < 40 ? pin : null
+    }
+    return null
+  }
   if (ESP_BOARDS.has(board)) {
     const chip = espChip(board)
     if (name === 'TX' || name === 'TX0') return chip === 'esp32c3' ? 21 : 43
@@ -99,6 +114,7 @@ export function unoPin(name: string): number | null { return boardPin('arduino-u
 
 function channelName(board: string, pin: number): string | null {
   if (!Number.isInteger(pin) || pin < 0) return null
+  if (CLASSIC_ESP32_BOARDS.has(board)) return pin < 40 ? `GPIO${pin}` : null
   if (ESP_BOARDS.has(board)) return espPinExists(espChip(board), pin) ? `GPIO${pin}` : null
   if (PICO_BOARDS.has(board)) return pin < 30 ? `GP${pin}` : null
   const digital = board === 'arduino-mega' ? 54 : 14
@@ -147,6 +163,9 @@ export function validateRuntimeArtifact(project: HardwareProject, artifact: Runt
 
 export class HardwareRuntime {
   private simulator: Simulator | null = null
+  private nativePins: RuntimeResults['pins'] | null = null
+  private nativeRunning = false
+  private nativeInput: ((pin: number, level: boolean) => void) | null = null
   private project: HardwareProject | null = null
   private socket: WebSocket | null = null
   private artifactId: string | null = null
@@ -368,22 +387,37 @@ export class HardwareRuntime {
     }
   }
 
+  applyNativeState(pins: RuntimeResults['pins'], running: boolean, input: ((pin: number, level: boolean) => void) | null) {
+    if (!CLASSIC_ESP32_BOARDS.has(this.project?.board ?? '')) return
+    const wasRunning = this.nativeRunning
+    this.nativePins = { ...pins }
+    this.nativeRunning = running
+    this.nativeInput = running ? input : null
+    if (wasRunning && !running) {
+      for (const cleanup of this.inputCleanups.values()) cleanup()
+      this.inputCleanups.clear()
+    }
+    if (running) this.attachInputs()
+    this.updateElements()
+  }
+
   async reset(): Promise<void> {
     if (!this.project || !this.artifact) throw new Error('Compile and load firmware before resetting the simulation.')
     await this.run(this.project, this.artifact)
   }
 
-  stop() { this.startupVersion++; this.simulator?.stop(); this.releaseAttachments(); this.publish() }
+  stop() { this.startupVersion++; this.simulator?.stop(); this.nativePins = null; this.nativeRunning = false; this.nativeInput = null; this.releaseAttachments(); this.publish() }
 
   getChannels(): string[] {
-    if (!this.project || (!AVR_BOARDS.has(this.project.board) && !PICO_BOARDS.has(this.project.board) && !ESP_BOARDS.has(this.project.board))) return []
-    const count = this.project.board === 'esp32-s3' ? 49 : this.project.board === 'esp32-c3' ? 22 : PICO_BOARDS.has(this.project.board) ? 30 : this.project.board === 'arduino-mega' ? 70 : 20
+    if (!this.project || (!AVR_BOARDS.has(this.project.board) && !PICO_BOARDS.has(this.project.board) && !ESP_BOARDS.has(this.project.board) && !CLASSIC_ESP32_BOARDS.has(this.project.board))) return []
+    const count = CLASSIC_ESP32_BOARDS.has(this.project.board) ? 40 : this.project.board === 'esp32-s3' ? 49 : this.project.board === 'esp32-c3' ? 22 : PICO_BOARDS.has(this.project.board) ? 30 : this.project.board === 'arduino-mega' ? 70 : 20
     return Array.from({ length: count }, (_, pin) => channelName(this.project!.board, pin)).filter((pin): pin is string => pin !== null)
   }
 
   readChannel(pin: string): RuntimeChannel {
     const number = this.project ? boardPin(this.project.board, pin) : null
     const manager = this.simulator?.pinManager
+    if (number !== null && this.nativePins) return { pin, ...(this.nativePins[`GPIO${number}`] ?? { level: null, drive: 'z' }) }
     return { pin, level: number !== null && manager ? manager.peekPinState(number) ?? null : null, drive: number !== null && manager ? manager.getPad(number).drive : 'z' }
   }
 
@@ -435,13 +469,16 @@ export class HardwareRuntime {
       if (/^GND(?:\.[0-9]+)?$/i.test(pin.pin)) return false
       if (['5V', '3.3V', '3V3', 'VBUS'].includes(pin.pin)) return true
       const number = this.project ? boardPin(this.project.board, pin.pin) : null
-      if (number !== null) return this.simulator?.pinManager.peekPinState(number) ?? null
+      if (number !== null) {
+        if (this.nativePins) return this.nativePins[`GPIO${number}`]?.level ?? null
+        return this.simulator?.pinManager.peekPinState(number) ?? null
+      }
     }
     return null
   }
 
   private attachInputs(id?: string) {
-    if (!this.project || !this.simulator) return
+    if (!this.project || (!this.simulator && !this.nativeRunning)) return
     for (const part of this.project.components.filter(part => (!id || part.id === id) && (part.type === 'pushbutton' || part.type === 'pushbutton-6mm'))) {
       if (this.inputCleanups.has(part.id)) continue
       const element = this.elements.get(part.id)
@@ -455,7 +492,12 @@ export class HardwareRuntime {
           if (!ground && !power) continue
           for (const pin of signal) {
             const number = boardPin(this.project!.board, pin.pin)
-            if (number === null || this.simulator?.pinManager.getPad(number).drive !== 'z') continue
+            if (number === null) continue
+            if (this.nativeRunning) {
+              this.nativeInput?.(number, pressed ? power : ground)
+              continue
+            }
+            if (this.simulator?.pinManager.getPad(number).drive !== 'z') continue
             const pull = this.simulator?.pinManager.getPad(number).pull
             const released = this.simulator instanceof EspEmulator ? ground : pull === 1
             this.simulator?.setPinState(number, pressed ? power : released)
@@ -466,18 +508,18 @@ export class HardwareRuntime {
       const release = () => update(false)
       element.addEventListener('button-press', press)
       element.addEventListener('button-release', release)
-      if (this.simulator instanceof EspEmulator) update(false)
+      if (this.simulator instanceof EspEmulator || this.nativeRunning) update(false)
       this.inputCleanups.set(part.id, () => { element.removeEventListener('button-press', press); element.removeEventListener('button-release', release) })
     }
   }
 
   private updateElements() {
-    if (!this.project || !this.simulator) return
+    if (!this.project || (!this.simulator && !this.nativePins)) return
     for (const part of this.project.components) {
       const element = this.elements.get(part.id) as (HTMLElement & { led13?: boolean; led?: boolean; value?: boolean; brightness?: number }) | undefined
       if (!element) continue
-      if (AVR_BOARDS.has(part.type)) element.led13 = this.simulator.pinManager.getPinState(13)
-      if (part.type === 'pi-pico') element.led = this.simulator.pinManager.getPinState(25)
+      if (AVR_BOARDS.has(part.type) && this.simulator) element.led13 = this.simulator.pinManager.getPinState(13)
+      if (part.type === 'pi-pico' && this.simulator) element.led = this.simulator.pinManager.getPinState(25)
       if (part.type === 'led') {
         const lit = this.level({ component: part.id, pin: 'A' }) === true && this.level({ component: part.id, pin: 'C' }) === false
         element.value = lit
@@ -536,6 +578,9 @@ export class HardwareRuntime {
     this.disposed = true
     this.startupVersion++
     this.simulator?.stop()
+    this.nativePins = null
+    this.nativeRunning = false
+    this.nativeInput = null
     this.releaseAttachments()
     if (this.timer) clearInterval(this.timer)
     this.socket?.close()

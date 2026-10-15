@@ -73,7 +73,7 @@ for board_id, name, target, chip, bootloader_offset in [
                    'tagName': 'wokwi-' + board_id, 'chip': chip, 'bootloader_offset': bootloader_offset,
                    'flash_size_bytes': 4 * 1024 * 1024, 'compile_timeout_seconds': 600,
                    'wifi': False, 'bluetooth': False,
-                   'simulation_scope': 'Native classic ESP32 CPU and UART0; GPIO, connected components, sensor buses and networking are not bridged.' if classic else 'Official Espressif WASM CPU, UART0 and sampled external GPIO; no connected sensor buses or real networking',
+                   'simulation_scope': 'Native classic ESP32 firmware execution with UART0 and sampled digital GPIO. ADC, I2C, SPI, RMT, LEDC and networking are not yet connected to canvas components.' if classic else 'Official Espressif WASM CPU, UART0 and sampled external GPIO; no connected sensor buses or real networking',
                    'unavailable_reason': None})
 for model in (3, 4, 5):
     BOARDS.append({'id': f'raspberry-pi-{model}', 'name': f'Raspberry Pi {model}', 'fqbn': None,
@@ -1124,6 +1124,9 @@ class HardwareService:
                 for key in ('artifact_id', 'run_id'):
                     if args.get(key) is not None:
                         identifier(args[key])
+                cursor = args.get('cursor')
+                if cursor is not None and (type(cursor) is not int or cursor < 0):
+                    fail(400, 'UART cursor must be a nonnegative integer.')
                 if name == 'run_simulation':
                     result = await self.native.run(self, project_id, RunRequest(**revision_args, artifact_id=args.get('artifact_id')))
                 elif name == 'stop_simulation':
@@ -1131,7 +1134,7 @@ class HardwareService:
                 else:
                     result = await self.native.results(self, project_id, runtime_token,
                                                        revision_args['expected_revision'], revision_args['source_revision'],
-                                                       run_id=args.get('run_id'))
+                                                       cursor=cursor, run_id=args.get('run_id'))
                 return {'status': 'acknowledged', 'command': name, 'result': result}
             remote = project['board'] in ('esp32-devkit-v1', 'esp32-devkit-c-v4', 'esp32-s3', 'esp32-c3') and bool(os.getenv('REMOTE_SIMULATION_URL'))
             native_adapter = project['board'] in ('esp32-devkit-v1', 'esp32-devkit-c-v4') and project_id in getattr(self.runtime, 'sessions', {})

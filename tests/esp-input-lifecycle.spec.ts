@@ -9,6 +9,7 @@ test('C3 firmware reads actual connected button and stops worker on project chan
  await command('generate_firmware',{source:'void setup(){Serial.begin(115200);pinMode(4,INPUT_PULLUP);}\nvoid loop(){Serial.println(digitalRead(4)==LOW?"PRESSED":"RELEASED");delay(100);}'})
  await command('compile_firmware',{},650000)
  await page.goto(`/project/${project.id}`)
+ await page.getByRole('button',{name:'Simulation',exact:true}).click()
  await page.getByRole('button',{name:'Run',exact:true}).click()
  await expect(page.getByRole('button',{name:'Stop',exact:true})).toBeVisible({timeout:60000})
  await page.getByRole('button',{name:'Serial monitor',exact:true}).click()
@@ -20,6 +21,7 @@ test('C3 firmware reads actual connected button and stops worker on project chan
  const other=await(await request.post('/api/hardware/projects',{data:{name:'After ESP',board:'arduino-uno'}})).json()
  await page.goto(`/project/${other.id}`)
  await expect(page.getByRole('button',{name:'Stop',exact:true})).toHaveCount(0)
+ await page.getByRole('button',{name:'Simulation',exact:true}).click()
  await expect(page.getByRole('button',{name:'Run',exact:true})).toBeDisabled()
 })
 
@@ -31,6 +33,7 @@ test('ESP startup errors are visible and stop cancels asynchronous loading',asyn
  test.skip(!project,'A compiled C3 fixture is required')
  await page.route('**/esp-emulator/pkg/esp_emu.js',route=>route.fulfill({status:404,body:'missing engine'}))
  await page.goto(`/project/${project.id}`)
+ await page.getByRole('button',{name:'Simulation',exact:true}).click()
  await page.getByRole('button',{name:'Run',exact:true}).click()
  await expect(page.getByRole('alert')).toContainText(/WASM|load|module|fetch/i,{timeout:45000})
  await expect(page.getByRole('button',{name:'Stop',exact:true})).toHaveCount(0)
