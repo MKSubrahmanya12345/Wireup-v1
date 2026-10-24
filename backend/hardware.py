@@ -23,6 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, WebSocket, WebS
 from starlette.requests import HTTPConnection
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
+from backend import beta
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE = '''void setup() {
@@ -765,7 +766,11 @@ class HardwareService:
         path = self._path(project_id)
         if not path.is_file():
             fail(404, 'Project not found.')
-        return json.loads(path.read_text(encoding='utf-8'))
+        project = json.loads(path.read_text(encoding='utf-8'))
+        owner = beta.workspace_id()
+        if owner and project.get('workspace_id') != owner:
+            fail(404, 'Project not found.')
+        return project
 
     def _save(self, project):
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -793,6 +798,7 @@ class HardwareService:
         if not isinstance(name, str) or not name.strip() or len(name) > 120:
             fail(400, 'Project name must contain 1 to 120 characters.')
         project = {'id': uuid.uuid4().hex, 'schema_version': 1, 'revision': 1, 'name': name.strip(),
+                   'workspace_id': beta.workspace_id(),
                    'board': board, 'components': [] if board == 'unselected' else [{'id': 'board', 'type': board, 'x': 120, 'y': 100,
                                                    'rotation': 0, 'properties': {}}], 'wires': [],
                    'firmware': {'filename': 'main.py' if board.startswith('raspberry-pi-') else 'sketch.ino', 'source': '' if board == 'unselected' or board.startswith('raspberry-pi-') else DEFAULT_BOARD_SOURCES.get(board, DEFAULT_SOURCE), 'revision': 1},
@@ -801,6 +807,7 @@ class HardwareService:
                    'runtime_token': secrets.token_urlsafe(32), 'created_at': now(), 'updated_at': now()}
         with self.lock:
             self._save(project)
+        beta.record_event('project_created', project_id=project['id'], properties={'board': board})
         return public(project)
 
     def get_project(self, project_id):
@@ -812,6 +819,9 @@ class HardwareService:
             projects = []
             if self.data_dir.is_dir():
                 for path in sorted(self.data_dir.glob('*.json')):
+                    raw = json.loads(path.read_text(encoding='utf-8'))
+                    if beta.workspace_id() and raw.get('workspace_id') != beta.workspace_id():
+                        continue
                     project = self._load(path.stem)
                     projects.append({key: project[key] for key in ('id', 'name', 'board', 'revision', 'created_at', 'updated_at')})
             return {'projects': projects}
@@ -824,6 +834,7 @@ class HardwareService:
             if project_id in self.runtime.sessions:
                 fail(409, 'This project is open in a hardware workspace. Close its workspace before deleting it.')
             self._path(project_id).unlink()
+            beta.record_event('project_deleted', project_id=project_id)
             return {'deleted': project['id']}
 
     def authorize_runtime(self, project, token):
@@ -1178,6 +1189,9 @@ class HardwareCommand(BaseModel):
 
 
 def local_connection(connection):
+    from backend import beta
+    if beta.enabled() and beta.user_id():
+        return True
     security = connection.scope.get('wireup.security', {})
     if security.get('production'):
         return bool(security.get('authentication_required') and security.get('authenticated') and (not security.get('origin_present') or security.get('trusted_origin')))

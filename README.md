@@ -31,6 +31,36 @@ BACKEND_PORT=8000
 
 Key/model edits apply on the next request. Port edits require restarting. Never use a `VITE_` API-key variable. `.env` is ignored; `.env.example` contains no key. Groq rate limits can block real builds even with a valid key. The agent retries the same model call at most twice with bounded waiting and never repeats already-completed tool mutations automatically. Check https://console.groq.com/settings/limits. A completed local test is not evidence that a provider quota problem is resolved.
 
+## Sarvam AI
+
+Sarvam uses its OpenAI-compatible v2 endpoint. Set `SARVAM_API_KEY` and
+`SARVAM_MODEL` (default `sarvam-105b`) to expose it in the model selector.
+`SARVAM_BASE_URL` defaults to `https://api.sarvam.ai/v2`. The backend keeps the
+key server-side and sends Sarvam's `api-subscription-key` header.
+
+## Beta monitoring
+
+The beta event log remains in `backend/data/beta.sqlite3`. Optional hosted
+observability can be enabled without changing product code:
+
+```dotenv
+SENTRY_DSN=
+POSTHOG_API_KEY=
+POSTHOG_HOST=https://app.posthog.com
+LANGFUSE_PUBLIC_KEY=
+LANGFUSE_SECRET_KEY=
+LANGFUSE_HOST=https://cloud.langfuse.com
+```
+
+Sentry receives backend exceptions, PostHog receives redacted product events,
+and Langfuse receives redacted model-run events. Prompts, firmware source,
+runtime tokens, and API keys are excluded from forwarded monitoring metadata.
+
+For real passwordless tester emails, configure `RESEND_API_KEY`,
+`RESEND_FROM_EMAIL`, and `WIREUP_PUBLIC_APP_URL`. Without those values, local
+development can use `WIREUP_BETA_DEV_LOGIN=true`; production should leave that
+development shortcut disabled.
+
 The **Chat model** selector in every chat composer switches between configured Groq and NVIDIA models and remembers the choice in this browser. NVIDIA uses the fixed OpenAI-compatible endpoint `https://integrate.api.nvidia.com/v1` through LangChain `ChatOpenAI`, retaining the same LangGraph hardware tools. The selector is disabled during generation. The configured model must support tools and be available to your NVIDIA account; a 403 response requires resolving provider/model access. Keys stay server-side and are never included in model-list responses.
 
 ## Azure
@@ -64,6 +94,24 @@ Six home-page starters open independent prewired copies: Serial Hello World, Uno
 `GET /api/hardware/samples` lists starters and requirements; `POST /api/hardware/samples/{id}/open` creates a revision-validated copy without an AI call. The agent can use `search_example_requirements` to consult all analyzed prototypes. Unsupported libraries, peripherals, multi-file/multi-board projects and networking are not silently imported. See the analysis for each blocker.
 
 ## Workspace
+
+## Invite-only beta mode
+
+For the fastest deployment, see
+[Vercel frontend with laptop backend](./docs/LAPTOP_BACKEND_VERCEL.md). The
+backend must remain on a stable HTTPS tunnel because it owns project files,
+compilation, and runtime WebSockets.
+
+Set `WIREUP_BETA_AUTH_ENABLED=true` to require an invited tester session for API
+access. Beta users receive an isolated workspace and projects are scoped to that
+workspace. The development sign-in form can be enabled locally with
+`WIREUP_BETA_DEV_LOGIN=true`; production should replace `/api/beta/dev-login`
+with a passwordless email provider before enabling it for real testers.
+
+The beta service stores users, invitations, sessions, and structured product
+events in the SQLite file configured by `WIREUP_BETA_DB`. Set
+`WIREUP_ADMIN_EMAIL` before the first development login to create the initial
+admin account. Admin endpoints are available at `/api/beta/admin/summary`.
 
 - Large circuit canvas, categorized visual catalog, right-side agent, floating fit/zoom controls, and compact collapsible console.
 - Circuit/Schematic representations of the same project; no Builder/Studio switch.

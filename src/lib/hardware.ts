@@ -73,8 +73,8 @@ export function hardwareCommandTimeoutMs(board: string | undefined, name: Hardwa
 async function request<T>(path: string, init?: RequestInit, timeoutMs = 15_000, operation = 'Hardware request'): Promise<T> {
   const deadline = createRequestSignal(timeoutMs, init?.signal)
   try {
-    const response = await fetch(`/api/hardware${path}`, {
-      ...init, signal: deadline.signal, headers: { 'Content-Type': 'application/json', ...init?.headers },
+    const response = await fetch(apiUrl(`/api/hardware${path}`), {
+      ...init, credentials: 'include', signal: deadline.signal, headers: { 'Content-Type': 'application/json', ...init?.headers },
     })
     const body = await response.json().catch(() => null)
     deadline.signal.throwIfAborted()
@@ -149,8 +149,9 @@ export function artifactIsCurrent(project: HardwareProject): boolean {
 }
 
 export function runtimeUrl(project: Pick<HardwareProject, 'id' | 'runtime_token'>): string {
-  const url = new URL(`/api/hardware/project/${encodeURIComponent(project.id)}/runtime`, window.location.href)
+  const url = new URL(apiWebSocketUrl(`/api/hardware/project/${encodeURIComponent(project.id)}/runtime`))
   url.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   url.searchParams.set('token', project.runtime_token)
   return url.toString()
 }
+import { apiUrl, apiWebSocketUrl } from '@/lib/api'

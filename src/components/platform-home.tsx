@@ -10,6 +10,7 @@ import { hardwareApi } from '@/lib/hardware'
 import { projectTitle } from '@/lib/project-title'
 import { loadWorkspaceModule } from '@/lib/workspace-module'
 import type { HardwareProjectSummary } from '@/lib/hardware'
+import { recordBetaEvent } from '@/lib/beta'
 
 export function PlatformHome() {
   const [prompt, setPrompt] = useState('')
@@ -24,7 +25,9 @@ export function PlatformHome() {
     setError('')
     void loadWorkspaceModule().catch(() => {})
     try {
+      recordBetaEvent('project_create_started', { has_prompt: Boolean(description) })
       const project = await hardwareApi.createProject(projectTitle(description))
+      recordBetaEvent('project_created', { board: project.board, has_prompt: Boolean(description) }, project.id)
       navigate(`/project/${project.id}`, { state: { initialPrompt: description } })
     } catch (error) { setError(error instanceof Error ? error.message : 'Could not create your workspace.'); setBusy(false) }
   }

@@ -52,7 +52,7 @@ type CheckProject = Pick<HardwareProject, 'id' | 'runtime_token'>
 async function command<T>(project: CheckProject, name: 'check_connections', args: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
   const deadline = createRequestSignal(15_000, signal)
   try {
-    const response = await fetch(`/api/hardware/project/${encodeURIComponent(project.id)}/command`, {
+    const response = await fetch(apiUrl(`/api/hardware/project/${encodeURIComponent(project.id)}/command`), {
       method: 'POST', signal: deadline.signal,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, args, ...(args.repair ? { runtime_token: project.runtime_token } : {}) }),
@@ -77,3 +77,4 @@ export const connectionCheckApi = {
   repair: (project: CheckProject, expectedRevision: number, signal?: AbortSignal) =>
     command<ConnectionCheckResult>(project, 'check_connections', { repair: true, expected_revision: expectedRevision }, signal),
 }
+import { apiUrl } from '@/lib/api'

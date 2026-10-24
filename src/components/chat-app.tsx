@@ -12,8 +12,10 @@ import type { ActivityEvent } from './ui/agent-activity-feed'
 import { isFeasibility, isQuestions, readChats, storageKey, streamReply } from '@/lib/chat'
 import type { Conversation, Message } from '@/lib/chat'
 import { projectTitle } from '@/lib/project-title'
-import { defaultModels, modelOptionKey, readSelectedModel } from '@/lib/model-selection'
+import { defaultModels, modelOptionKey, readModelSelection, readSelectedModel } from '@/lib/model-selection'
 import type { ModelOption, ModelProvider } from '@/lib/model-selection'
+import { recordBetaEvent } from '@/lib/beta'
+import { apiUrl } from '@/lib/api'
 
 export function ChatApp({ projectId, runtimeToken, embedded = false, initialPrompt, setupGuidance }: { projectId?: string; runtimeToken?: string; embedded?: boolean; initialPrompt?: string; setupGuidance?: string } = {}) {
   const chatStorageKey = embedded && projectId ? `wireup.project.${projectId}.chats.v1` : storageKey
@@ -29,20 +31,20 @@ export function ChatApp({ projectId, runtimeToken, embedded = false, initialProm
   const [drawer, setDrawer] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   const [health, setHealth] = useState<{ configured: boolean; model: string; providers?: ModelOption[] } | null>(null)
-  const provider: ModelProvider = 'azure'
+  const [provider, setProvider] = useState<ModelProvider>(readModelSelection)
   const [modelId, setModelId] = useState(readSelectedModel)
   const providerModels = health?.providers || defaultModels.map(option => option.id === 'groq' && health ? { ...option, model: health.model, configured: health.configured } : option)
-  const accessibleModelIds = ['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-6-astra', 'gpt-6-luna', 'gpt-6-sol', 'gpt-6.1-sol']
-  const models: ModelOption[] = accessibleModelIds.map(model => ({ id: 'azure', label: 'Azure', model, configured: providerModels.find(option => option.id === 'azure')?.configured ?? false }))
-  const selectedModel = models.find(option => option.model === modelId) || models.find(option => option.model === 'gpt-6.1-sol')!
+  const models: ModelOption[] = providerModels.filter(option => option.configured || option.id === provider)
+  const selectedModel = models.find(option => option.model === modelId) || models.find(option => option.id === provider) || providerModels[0]!
   const selectionKey = modelOptionKey(selectedModel)
   const changeModel = (key: string) => {
     const option = models.find(option => modelOptionKey(option) === key)
     if (!option) return
+    setProvider(option.id)
     setModelId(option.model)
     try { localStorage.setItem('wireup.model-provider', option.id); localStorage.setItem('wireup.model-id', option.model) } catch { /* Selection remains available for this page. */ }
   }
-  const selectedKeyName = { groq: 'GROQ_API_KEY', nvidia: 'NVIDIA_API_KEY', bedrock: 'BEDROCK_API_KEY', azure: 'AZURE_API_KEY' }[provider]
+  const selectedKeyName = { groq: 'GROQ_API_KEY', nvidia: 'NVIDIA_API_KEY', bedrock: 'BEDROCK_API_KEY', azure: 'AZURE_API_KEY', sarvam: 'SARVAM_API_KEY' }[provider]
   const [connectionError, setConnectionError] = useState('')
   const [rename, setRename] = useState<{ id: string; value: string } | null>(null)
   const [deleting, setDeleting] = useState<string | null>(null)
@@ -69,7 +71,7 @@ export function ChatApp({ projectId, runtimeToken, embedded = false, initialProm
 
   const checkHealth = useCallback(async () => {
     try {
-      const response = await fetch('/api/health', { signal: AbortSignal.timeout(10_000) })
+      const response = await fetch(apiUrl('/api/health'), { credentials: 'include', signal: AbortSignal.timeout(10_000) })
       if (!response.ok) throw new Error()
       const data = await response.json()
       if (typeof data.configured !== 'boolean' || typeof data.model !== 'string') throw new Error()
@@ -98,6 +100,7 @@ export function ChatApp({ projectId, runtimeToken, embedded = false, initialProm
     const abort = new AbortController()
     controller.current = abort
     setBusy(chat.id)
+    recordBetaEvent('ai_run_started', { provider, model: selectedModel.model }, projectId)
     const reply: Message = { id: crypto.randomUUID(), role: 'assistant', content: '', status: 'streaming', blocks: [], startedAt: Date.now() }
     setChats(previous => {
       const updated = { ...chat, messages: [...context, reply], updatedAt: Date.now(), requirements: answers, projectId }
@@ -275,4 +278,3 @@ export function ChatApp({ projectId, runtimeToken, embedded = false, initialProm
     </div>
   )
 }
-

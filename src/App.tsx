@@ -11,6 +11,8 @@ import { AllProjects } from '@/components/all-projects'
 import { ExamplesGallery } from '@/components/examples-gallery'
 import { PlatformHome } from '@/components/platform-home'
 import { WorkspaceLoading } from '@/components/ui/workspace-loading'
+import { BetaGate } from '@/components/beta-gate'
+import { BetaAdmin } from '@/components/beta-admin'
 import './ui-theme.css'
 
 const Preview = lazy(() => import('@/components/demo'))
@@ -73,7 +75,7 @@ function ProjectPage() {
 }
 
 export default function App() {
-  return (
+  return <BetaGate>
     <BrowserRouter>
       <Routes>
         <Route path="/orb" element={<Suspense fallback={<div className="h-svh bg-[#0a0a0a]" />}><Preview /></Suspense>} />
@@ -81,10 +83,11 @@ export default function App() {
         <Route path="/chat/:id" element={<ChatApp />} />
         <Route path="/projects" element={<AllProjects />} />
         <Route path="/examples" element={<ExamplesGallery />} />
+        <Route path="/admin" element={<BetaAdmin />} />
         <Route path="/assistant" element={<ChatApp />} />
         <Route path="/project/:projectId" element={<ProjectPage />} />
         <Route path="*" element={<div className="flex h-svh items-center justify-center bg-neutral-950 text-white"><a href="/">Page not found. Return to WireUp.</a></div>} />
       </Routes>
     </BrowserRouter>
-  )
+  </BetaGate>
 }

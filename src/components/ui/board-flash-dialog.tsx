@@ -21,7 +21,7 @@ export function BoardFlashDialog({ project, dirty, running, onClose }: { project
     const abort = new AbortController(); controller.current = abort
     setLoading(true); setError('')
     try {
-      const response = await fetch('/api/hardware/devices', {signal:abort.signal})
+      const response = await fetch(apiUrl('/api/hardware/devices'), { credentials: 'include', signal:abort.signal})
       const body = await response.json()
       if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : 'Could not detect connected boards.')
       if (!abort.signal.aborted) { setDevices(body.devices); setPort(''); setConfirmed(false) }
@@ -38,7 +38,7 @@ export function BoardFlashDialog({ project, dirty, running, onClose }: { project
     const abort = new AbortController(); controller.current = abort
     setUploading(true); setError(''); setOutput(''); setSuccess(false)
     try {
-      const response = await fetch(`/api/hardware/projects/${encodeURIComponent(project.id)}/flash`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: abort.signal, body: JSON.stringify({ port, expected_revision: project.revision, source_revision: project.firmware.revision, confirm: true }) })
+      const response = await fetch(apiUrl(`/api/hardware/projects/${encodeURIComponent(project.id)}/flash`), { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, signal: abort.signal, body: JSON.stringify({ port, expected_revision: project.revision, source_revision: project.firmware.revision, confirm: true }) })
       const body = await response.json()
       if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : 'Hardware upload failed.')
       setOutput([body.stdout, body.stderr].filter(Boolean).join('\n'))
@@ -61,3 +61,4 @@ export function BoardFlashDialog({ project, dirty, running, onClose }: { project
     <footer><button disabled={!current || !port || !confirmed || uploading || running} onClick={() => void flash()}><Upload size={15}/>{uploading ? 'Uploading…' : 'Flash code to board'}</button><small>Close Serial Monitor or other apps using the port. Physical hardware is never flashed by the AI.</small></footer>
   </dialog>
 }
+import { apiUrl } from '@/lib/api'

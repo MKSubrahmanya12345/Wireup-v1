@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently -k -n api,web \"npm:dev:api\" \"npm:dev:web\"",
+    "subbu": "node scripts/subbu.mjs",
     "dev:web": "vite --host 127.0.0.1",
     "dev:api": "node scripts/python.mjs -m backend.run",
     "test": "playwright test",

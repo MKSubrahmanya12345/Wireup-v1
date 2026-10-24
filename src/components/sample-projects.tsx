@@ -14,7 +14,7 @@ export function SampleProjects() {
   const navigate = useNavigate()
   useEffect(() => {
     let active = true
-    fetch('/api/hardware/samples/all').then(async response => {
+    fetch(apiUrl('/api/hardware/samples/all'), { credentials: 'include' }).then(async response => {
       if (!response.ok) throw new Error('Starter projects are temporarily unavailable.')
       const result = await response.json()
       if (!Array.isArray(result.examples)) throw new Error('Starter project catalog returned an invalid response.')
@@ -50,3 +50,4 @@ export function SampleProjects() {
     {!loading && !error && !samples.length && <p className="text-sm text-neutral-500">No compatible starters are available yet.</p>}
   </section>
 }
+import { apiUrl } from '@/lib/api'

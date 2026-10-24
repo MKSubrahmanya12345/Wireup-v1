@@ -3,6 +3,7 @@ import type { FeasibilityReport } from '@/components/ui/feasibility-card'
 import type { ModelProvider } from '@/lib/model-selection'
 import type { ProjectQuestions } from '@/components/ui/project-questions'
 import type { ActivityBlock } from '@/components/ui/agent-activity-feed'
+import { apiUrl } from '@/lib/api'
 
 export type Message = {
   run?: { status: string; reason?: string; changes?: Record<string, number>; toolCalls?: number; modelCalls?: number; successfulTools?: Record<string, number> }
@@ -108,8 +109,8 @@ export async function streamReply(
   let headerTimeout = false
   const timer = setTimeout(() => { headerTimeout = true; requestController.abort() }, 30_000)
   try {
-  const response = await fetch('/api/chat', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: requestController.signal,
+  const response = await fetch(apiUrl('/api/chat'), {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', signal: requestController.signal,
     body: JSON.stringify({ provider: scope.provider || 'groq', model: scope.model, project_id: scope.projectId, runtime_token: scope.runtimeToken, project_answers: scope.answers, approval: scope.approval, messages: serializeChatHistory(messages) }),
   })
   clearTimeout(timer)

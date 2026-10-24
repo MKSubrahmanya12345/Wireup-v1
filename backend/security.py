@@ -177,6 +177,16 @@ class SecurityMiddleware:
         async def secure_send(message):
             if message['type'] in ('http.response.start', 'websocket.accept'):
                 message = {**message, 'headers': self._headers(message.get('headers', []), protected)}
+                if trusted_origin and scope['type'] == 'http':
+                    origin = origin_values[0]
+                    message['headers'] = [
+                        *message['headers'],
+                        (b'access-control-allow-origin', origin),
+                        (b'access-control-allow-credentials', b'true'),
+                        (b'access-control-allow-headers', b'content-type, authorization'),
+                        (b'access-control-allow-methods', b'GET, POST, PUT, PATCH, DELETE, OPTIONS'),
+                        (b'vary', b'Origin'),
+                    ]
             await send(message)
 
         if scope['type'] == 'websocket':

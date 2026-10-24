@@ -14,7 +14,7 @@ export function ExamplesGallery() {
   const [opening, setOpening] = useState('')
   const navigate = useNavigate()
   useEffect(() => {
-    fetch('/api/hardware/samples/all').then(async response => {
+    fetch(apiUrl('/api/hardware/samples/all'), { credentials: 'include' }).then(async response => {
       if (!response.ok) throw new Error('Could not load examples.')
       setExamples((await response.json()).examples)
     }).catch(error => setError(error.message)).finally(() => setLoading(false))
@@ -56,3 +56,4 @@ export function ExamplesGallery() {
     </main>
   </div>
 }
+import { apiUrl } from '@/lib/api'

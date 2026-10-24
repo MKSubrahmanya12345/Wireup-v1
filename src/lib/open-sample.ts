@@ -1,5 +1,5 @@
 export async function openSample(id: string) {
-  const response = await fetch(`/api/hardware/samples/${encodeURIComponent(id)}/open`, { method: 'POST' })
+  const response = await fetch(apiUrl(`/api/hardware/samples/${encodeURIComponent(id)}/open`), { method: 'POST', credentials: 'include' })
   const project = await response.json()
   if (!response.ok) throw new Error(typeof project.detail === 'string' ? project.detail : 'Could not open this sample.')
   if (project.setup_guidance) {
@@ -13,3 +13,4 @@ export async function openSample(id: string) {
   }
   return project
 }
+import { apiUrl } from '@/lib/api'

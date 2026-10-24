@@ -3,13 +3,14 @@ from contextlib import aclosing, asynccontextmanager
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 from threading import Lock
 from typing import Literal
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, Field, model_validator, field_validator
@@ -20,6 +21,8 @@ from backend.plain_chat import stream_plain_chat
 from backend.hardware import router as hardware_router, local_connection
 from backend.sample_projects import router as sample_router
 from backend.security import SecurityMiddleware
+from backend import beta
+from backend import monitoring
 
 ENV_PATH = Path(__file__).resolve().parents[1] / '.env'
 load_dotenv(ENV_PATH)
@@ -48,7 +51,7 @@ class ChatRequest(BaseModel):
     runtime_token: str | None = Field(default=None, max_length=128)
     project_answers: dict[str, str] | None = None
     approval: FeasibilityApproval | None = None
-    provider: Literal['groq', 'nvidia', 'bedrock', 'azure'] = 'groq'
+    provider: Literal['groq', 'nvidia', 'bedrock', 'azure', 'sarvam'] = 'groq'
     model: str | None = Field(default=None, min_length=1, max_length=256, pattern=r'^[^\s\x00-\x1f]+$')
 
     @field_validator('project_answers')
@@ -137,6 +140,24 @@ def create_app(model_factory=None, api_key=None):
     application.state.model_factory = model_factory
     application.include_router(hardware_router)
     application.include_router(sample_router)
+    application.include_router(beta.router)
+    application.include_router(monitoring.router)
+
+    @application.middleware('http')
+    async def beta_auth(request: Request, call_next):
+        if request.method == 'OPTIONS':
+            return Response(status_code=204)
+        if beta.enabled() and request.url.path.startswith('/api/') and not (
+            request.url.path in ('/api/health', '/api/beta/session', '/api/beta/request-access',
+                                 '/api/beta/dev-login') or request.url.path.startswith('/api/beta/invite')
+        ):
+            beta.identify(request)
+        try:
+            response = await call_next(request)
+            return response
+        except Exception as error:
+            monitoring.capture_error(error, path=request.url.path, user_id=beta.user_id())
+            raise
 
     @application.get('/api/health')
     async def health():
@@ -155,12 +176,20 @@ def create_app(model_factory=None, api_key=None):
         if not local_connection(request):
             raise HTTPException(403, 'The local hardware agent is restricted to loopback clients.')
         reload_settings()
+        beta.record_event('ai_run_started', project_id=payload.project_id,
+                          properties={'provider': payload.provider, 'model': payload.model})
         provider = payload.provider
-        key_name = {'azure': 'AZURE_API_KEY', 'nvidia': 'NVIDIA_API_KEY', 'bedrock': 'BEDROCK_API_KEY', 'groq': 'GROQ_API_KEY'}[provider]
+        key_name = {'azure': 'AZURE_API_KEY', 'nvidia': 'NVIDIA_API_KEY', 'bedrock': 'BEDROCK_API_KEY', 'groq': 'GROQ_API_KEY', 'sarvam': 'SARVAM_API_KEY'}[provider]
         key = api_key if api_key is not None else os.getenv(key_name, '')
         if not key.strip() and not (provider == 'bedrock' and bedrock_configured()):
             raise HTTPException(503, f'Add {key_name} to .env, then retry to enable {provider.upper()} replies.')
-        model_name = os.getenv('AZURE_MODEL_ID', 'gpt-6.1-sol') if provider == 'azure' else os.getenv('BEDROCK_MODEL_ID', 'moonshotai.kimi-k2.5') if provider == 'bedrock' else os.getenv('NVIDIA_MODEL', 'z-ai/glm-5.3') if provider == 'nvidia' else os.getenv('GROQ_MODEL', 'openai/gpt-oss-120b')
+        model_name = (
+            os.getenv('AZURE_MODEL_ID', 'gpt-6.1-sol') if provider == 'azure'
+            else os.getenv('BEDROCK_MODEL_ID', 'moonshotai.kimi-k2.5') if provider == 'bedrock'
+            else os.getenv('NVIDIA_MODEL', 'z-ai/glm-5.3') if provider == 'nvidia'
+            else os.getenv('SARVAM_MODEL', 'sarvam-105b') if provider == 'sarvam'
+            else os.getenv('GROQ_MODEL', 'openai/gpt-oss-120b')
+        )
         model_name = payload.model or model_name
         selected = []
         count = 0
@@ -182,11 +211,15 @@ def create_app(model_factory=None, api_key=None):
                 history.append(cls(content=message.content))
 
         async def generate():
+            started = time.monotonic()
             yield event('heartbeat')
             try:
                 async with asyncio.timeout(20):
                     model = await asyncio.to_thread(application.state.model_factory) if application.state.model_factory else await asyncio.to_thread(cached_model, provider, key, model_name, asyncio.get_running_loop())
             except Exception:
+                monitoring.capture('ai_run_failed', {'provider': provider, 'model': model_name,
+                                                     'duration_ms': int((time.monotonic() - started) * 1000)},
+                                   distinct_id=beta.user_id())
                 yield event('text', channel='narration', text=f'{provider.upper()} model initialization failed or timed out. Check its API settings and retry.')
                 yield event('done', status='error')
                 return
@@ -216,6 +249,11 @@ def create_app(model_factory=None, api_key=None):
                             item = {**item, 'text': text}
                         yield json.dumps(item, ensure_ascii=False) + '\n'
                         if item.get('type') == 'done':
+                            monitoring.capture('ai_run_completed', {
+                                'provider': provider, 'model': model_name,
+                                'duration_ms': int((time.monotonic() - started) * 1000),
+                                'status': item.get('status', 'success'),
+                            }, distinct_id=beta.user_id())
                             return
                         pending = asyncio.create_task(anext(agent, None))
                 finally:

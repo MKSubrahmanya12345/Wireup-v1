@@ -6,15 +6,19 @@ from backend.bedrock_model import bedrock_configured, build_bedrock
 
 NVIDIA_BASE_URL = 'https://integrate.api.nvidia.com/v1'
 AZURE_BASE_URL = 'https://project-t3-resource.services.ai.azure.com/openai/v1'
+SARVAM_BASE_URL = 'https://api.sarvam.ai/v2'
 
 
 def model_options():
-    return [
+    options = [
         {'id': 'groq', 'label': 'Groq', 'model': os.getenv('GROQ_MODEL', 'openai/gpt-oss-120b'), 'configured': bool(os.getenv('GROQ_API_KEY', '').strip())},
         {'id': 'nvidia', 'label': 'NVIDIA', 'model': os.getenv('NVIDIA_MODEL', 'z-ai/glm-5.3'), 'configured': bool(os.getenv('NVIDIA_API_KEY', '').strip())},
         {'id': 'bedrock', 'label': 'Amazon Bedrock', 'model': os.getenv('BEDROCK_MODEL_ID', 'moonshotai.kimi-k2.5'), 'configured': bedrock_configured()},
         {'id': 'azure', 'label': 'Azure', 'model': os.getenv('AZURE_MODEL_ID', 'gpt-6.1-sol'), 'configured': bool(os.getenv('AZURE_API_KEY', '').strip())},
     ]
+    if os.getenv('SARVAM_API_KEY', '').strip():
+        options.append({'id': 'sarvam', 'label': 'Sarvam AI', 'model': os.getenv('SARVAM_MODEL', 'sarvam-105b'), 'configured': True})
+    return options
 
 
 def _max_tokens(env_name):
@@ -41,6 +45,13 @@ def build_model(provider, key, model_name):
         return ChatOpenAI(model=model_name, api_key=key, base_url=NVIDIA_BASE_URL,
                           temperature=0.5, max_retries=0, timeout=20, streaming=True,
                           max_tokens=_max_tokens('NVIDIA_MAX_TOKENS'),
+                          stream_usage=False)
+    if provider == 'sarvam':
+        return ChatOpenAI(model=model_name, api_key=key,
+                          base_url=os.getenv('SARVAM_BASE_URL', SARVAM_BASE_URL).rstrip('/'),
+                          temperature=0.3, max_retries=0, timeout=60, streaming=True,
+                          max_tokens=_max_tokens('SARVAM_MAX_TOKENS'),
+                          default_headers={'api-subscription-key': key},
                           stream_usage=False)
     options = {}
     if model_name in ('openai/gpt-oss-120b', 'openai/gpt-oss-20b'):

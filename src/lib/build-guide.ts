@@ -53,7 +53,7 @@ type GuideProject = Pick<HardwareProject, 'id' | 'runtime_token'>
 async function request<T>(id: string, suffix = '', init: RequestInit = {}): Promise<T> {
   const deadline = createRequestSignal(15_000, init.signal)
   try {
-    const response = await fetch(`/api/hardware/projects/${encodeURIComponent(id)}/build-guide${suffix}`, {
+    const response = await fetch(apiUrl(`/api/hardware/projects/${encodeURIComponent(id)}/build-guide${suffix}`), {
       ...init,
       signal: deadline.signal,
       headers: { 'Content-Type': 'application/json', ...init.headers },
@@ -94,3 +94,4 @@ export const buildGuideApi = {
       }),
     }),
 }
+import { apiUrl } from '@/lib/api'
