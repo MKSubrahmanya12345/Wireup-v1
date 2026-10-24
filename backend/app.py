@@ -146,7 +146,21 @@ def create_app(model_factory=None, api_key=None):
     @application.middleware('http')
     async def beta_auth(request: Request, call_next):
         if request.method == 'OPTIONS':
-            return Response(status_code=204)
+            response = Response(status_code=204)
+            origin = request.headers.get('origin')
+            if origin and origin.rstrip('/') in {
+                allowed.strip().rstrip('/')
+                for allowed in os.getenv('WIREUP_ALLOWED_ORIGINS', '').split(',')
+                if allowed.strip()
+            }:
+                response.headers.update({
+                    'Access-Control-Allow-Origin': origin,
+                    'Access-Control-Allow-Credentials': 'true',
+                    'Access-Control-Allow-Headers': 'content-type, authorization',
+                    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+                    'Vary': 'Origin',
+                })
+            return response
         if beta.enabled() and request.url.path.startswith('/api/') and not (
             request.url.path in ('/api/health', '/api/beta/session', '/api/beta/request-access',
                                  '/api/beta/dev-login') or request.url.path.startswith('/api/beta/invite')
