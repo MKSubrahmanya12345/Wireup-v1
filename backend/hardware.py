@@ -11,6 +11,7 @@ import os
 import re
 import secrets
 import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -504,6 +505,9 @@ class ComponentCatalog:
 
 
 class ArduinoCompiler:
+    CORE_HEADERS = {'Arduino.h', 'Wire.h', 'SPI.h', 'EEPROM.h', 'stdint.h', 'stddef.h', 'stdbool.h'}
+    INCLUDE_PATTERN = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]', re.MULTILINE)
+
     def __init__(self, executable=None, timeout=None, output_limit=256000,
                  classic_esp32_config=None, classic_esp32_boot_app=None):
         self.executable = executable or os.getenv('ARDUINO_CLI_PATH') or shutil.which('arduino-cli')
@@ -514,6 +518,63 @@ class ArduinoCompiler:
         self.output_limit = output_limit
         self.classic_esp32_config = Path(classic_esp32_config) if classic_esp32_config else ROOT / 'vendor/qemu/arduino-cli.yaml'
         self.classic_esp32_boot_app = Path(classic_esp32_boot_app) if classic_esp32_boot_app else ROOT / 'vendor/qemu/arduino-data/packages/esp32/hardware/esp32/2.0.17/tools/partitions/boot_app0.bin'
+
+    async def _ensure_libraries(self, source):
+        headers = sorted({
+            header for header in self.INCLUDE_PATTERN.findall(source)
+            if header not in self.CORE_HEADERS and '/' not in header and '\\' not in header
+        })
+        installed = []
+        for header in headers:
+            try:
+                search = await asyncio.to_thread(
+                    subprocess.run,
+                    [str(self.executable), 'lib', 'search', '--format', 'json', header],
+                    capture_output=True, text=True, timeout=30, check=False,
+                )
+                if search.returncode != 0:
+                    continue
+                libraries = json.loads(search.stdout).get('libraries', [])
+                if not libraries:
+                    continue
+                name = libraries[0].get('name')
+                if not isinstance(name, str) or not name.strip():
+                    continue
+                install = await asyncio.to_thread(
+                    subprocess.run,
+                    [str(self.executable), 'lib', 'install', name],
+                    capture_output=True, text=True, timeout=180, check=False,
+                )
+                if install.returncode != 0:
+                    fail(503, f'Could not install Arduino library for {header}: {install.stderr.strip()[-1000:]}')
+                installed.append({'header': header, 'library': name})
+            except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
+                fail(503, f'Could not prepare Arduino library for {header}: {error}')
+        return installed
+
+    async def library_status(self, source):
+        headers = sorted({
+            header for header in self.INCLUDE_PATTERN.findall(source)
+            if header not in self.CORE_HEADERS and '/' not in header and '\\' not in header
+        })
+        result = []
+        for header in headers:
+            search = await asyncio.to_thread(
+                subprocess.run,
+                [str(self.executable), 'lib', 'search', '--format', 'json', header],
+                capture_output=True, text=True, timeout=30, check=False,
+            )
+            candidates = []
+            if search.returncode == 0:
+                try:
+                    candidates = json.loads(search.stdout).get('libraries', [])
+                except json.JSONDecodeError:
+                    candidates = []
+            match = candidates[0] if candidates else {}
+            result.append({'header': header, 'library': match.get('name'), 'available': bool(match.get('name')),
+                           'installed': match.get('installed_version') is not None,
+                           'version': match.get('installed_version')})
+        return result
 
     def _classic_esp32_flash(self, output, build, board):
         if not self.classic_esp32_boot_app.is_file():
@@ -604,6 +665,7 @@ class ArduinoCompiler:
         if not self.executable or not Path(self.executable).is_file():
             fail(503, 'Arduino CLI is unavailable. Install it or configure ARDUINO_CLI_PATH.')
         source = source_text(project['firmware']['source'])
+        libraries = await self._ensure_libraries(source)
         compile_source = '#define Serial Serial1\n' + source if board['runtime'] == 'rp2040js' else source
         with tempfile.TemporaryDirectory(prefix='wireup-compile-') as directory:
             sketch = Path(directory) / 'sketch'
@@ -659,6 +721,7 @@ class ArduinoCompiler:
                       'source_revision': project['firmware']['revision'], 'project_revision': project['revision'],
                       'source': source, 'compile_source': compile_source, 'fqbn': board['fqbn'],
                       'board': project['board'], 'artifact': None, 'compiled_at': now()}
+            result['libraries'] = libraries
             if successful:
                 if artifact_path.stat().st_size > board.get('flash_size_bytes', 2000000):
                     fail(502, 'Compiled artifact exceeded the safe limit.')
@@ -695,8 +758,16 @@ class RuntimeBridge:
         self.pending = {}
 
     async def attach(self, project_id, websocket):
-        if project_id in self.sessions:
-            await websocket.close(code=4409)
+        previous = self.sessions.get(project_id)
+        if previous is not None and previous is not websocket:
+            try:
+                await previous.close(code=4410)
+            except Exception:
+                pass
+            try:
+                await websocket.close(code=4409)
+            except Exception:
+                pass
             return False
         self.sessions[project_id] = websocket
         self.pending[project_id] = {}
@@ -1084,6 +1155,23 @@ class HardwareService:
             return calculator(args.get('expression'))
         if name == 'read_compiler_errors':
             return project['compiler'] or {'status': 'not_compiled', 'errors': []}
+        if name == 'inspect_libraries':
+            if not self.compiler.executable:
+                fail(503, 'Arduino CLI is unavailable. Install it or configure ARDUINO_CLI_PATH.')
+            return {'libraries': await self.compiler.library_status(project['firmware']['source'])}
+        if name == 'install_library':
+            library = args.get('library')
+            if not isinstance(library, str) or not re.fullmatch(r'[A-Za-z0-9 ._+:-]{1,160}', library):
+                fail(400, 'Invalid Arduino library name.')
+            if not self.compiler.executable:
+                fail(503, 'Arduino CLI is unavailable. Install it or configure ARDUINO_CLI_PATH.')
+            install = await asyncio.to_thread(
+                subprocess.run, [str(self.compiler.executable), 'lib', 'install', library],
+                capture_output=True, text=True, timeout=180, check=False,
+            )
+            if install.returncode:
+                fail(503, f'Could not install Arduino library: {install.stderr.strip()[-1000:]}')
+            return {'installed': library}
         if name == 'compile_firmware':
             self._check_revision(project, args)
             compilation_error = None
