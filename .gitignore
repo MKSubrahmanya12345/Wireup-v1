@@ -42,3 +42,6 @@ vendor/qemu/arduino-user/
 *.njsproj
 *.sln
 *.sw?
+.vercel
+.env*
+tools/

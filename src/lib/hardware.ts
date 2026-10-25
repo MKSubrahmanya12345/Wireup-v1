@@ -30,7 +30,7 @@ export type HardwareCommand = 'route_breadboard' | 'check_connections'
   | 'read_project' | 'search_components' | 'add_component' | 'remove_component' | 'modify_component'
   | 'connect_wire' | 'remove_wire' | 'generate_firmware' | 'read_firmware' | 'edit_firmware'
   | 'compile_firmware' | 'run_simulation' | 'stop_simulation' | 'read_simulation_results'
-  | 'read_compiler_errors' | 'calculator' | 'undo'
+  | 'read_compiler_errors' | 'inspect_libraries' | 'install_library' | 'calculator' | 'undo'
 
 export class HardwareApiError extends Error {
   status: number

@@ -8,6 +8,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const isWindows = process.platform === 'win32'
 const python = resolve(root, isWindows ? '.venv/Scripts/python.exe' : '.venv/bin/python')
 const envPath = resolve(root, '.env')
+const localArduinoCli = resolve(root, isWindows ? 'tools/arduino-cli.exe' : 'tools/arduino-cli')
 const args = new Set(process.argv.slice(2))
 
 function fail(message) {
@@ -44,7 +45,11 @@ function setEnvValues(values) {
 }
 
 function withEnv(overrides = {}) {
-  return { ...process.env, ...overrides }
+  return {
+    ...process.env,
+    ...(existsSync(localArduinoCli) ? { ARDUINO_CLI_PATH: localArduinoCli } : {}),
+    ...overrides,
+  }
 }
 
 function run(command, commandArgs, overrides = {}) {

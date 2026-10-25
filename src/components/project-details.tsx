@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { Download, X } from 'lucide-react'
-import { catalogType } from '../lib/hardware'
+import { Download, Package, X } from 'lucide-react'
+import { catalogType, hardwareApi } from '../lib/hardware'
 import type { CatalogComponent, HardwareComponent, HardwareProject, WireEndpoint } from '../lib/hardware'
 import { InstructionsGuide } from './instructions-guide'
 import './project-details.css'
@@ -9,7 +9,7 @@ export type ProjectDetailsProps = {
   project: HardwareProject
   catalog: CatalogComponent[]
   onClose: () => void
-  initialTab?: 'Info' | 'Parts' | 'Wiring' | 'Instructions'
+  initialTab?: 'Info' | 'Parts' | 'Wiring' | 'Libraries' | 'Instructions'
   embedded?: boolean
   readOnly?: boolean
   onOpenPart?: (id: string) => void
@@ -17,8 +17,8 @@ export type ProjectDetailsProps = {
   onOpenCode?: () => void
 }
 
-type DetailsTab = 'Info' | 'Parts' | 'Wiring' | 'Instructions'
-const tabs: DetailsTab[] = ['Info', 'Parts', 'Wiring', 'Instructions']
+type DetailsTab = 'Info' | 'Parts' | 'Wiring' | 'Libraries' | 'Instructions'
+const tabs: DetailsTab[] = ['Info', 'Parts', 'Wiring', 'Libraries', 'Instructions']
 
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical)
@@ -92,6 +92,9 @@ export function ProjectDetails({ project, catalog, onClose, initialTab = 'Info',
   const [tab, setTab] = useState<DetailsTab>(initialTab)
   const [filter, setFilter] = useState('')
   const [exportError, setExportError] = useState('')
+  const [libraries, setLibraries] = useState<Array<{ header: string; library?: string; available: boolean; installed: boolean; version?: string }>>([])
+  const [libraryBusy, setLibraryBusy] = useState('')
+  const [libraryError, setLibraryError] = useState('')
   const board = catalog.find(item => catalogType(item) === project.board)
   const boardName = board?.name || project.board
   const partName = (type: string) => catalog.find(item => catalogType(item) === type)?.name || type
@@ -123,7 +126,31 @@ export function ProjectDetails({ project, catalog, onClose, initialTab = 'Info',
         const rows = [['wire_id', 'from_component', 'from_pin', 'to_component', 'to_pin', 'color'], ...project.wires.map(wire => [wire.id, wire.from.component, wire.from.pin, wire.to.component, wire.to.pin, wire.color])]
         download(rows.map(row => row.map(csvCell).join(',')).join('\r\n'), `${filename}-wiring.csv`, 'text/csv;charset=utf-8')
       }
+
     } catch { setExportError('Could not download the export. Please try again.') }
+  }
+
+  async function loadLibraries() {
+    setLibraryError('')
+    setLibraryBusy('scan')
+    try {
+      const result = await hardwareApi.command<{ libraries: typeof libraries }>(project, 'inspect_libraries')
+      setLibraries(result.libraries)
+    } catch (error) {
+      setLibraryError(error instanceof Error ? error.message : 'Could not inspect Arduino libraries.')
+    } finally { setLibraryBusy('') }
+  }
+
+  async function installLibrary(library: string) {
+    setLibraryError('')
+    setLibraryBusy(library)
+    try {
+      await hardwareApi.command(project, 'install_library', { library })
+      await loadLibraries()
+    } catch (error) {
+      setLibraryError(error instanceof Error ? error.message : 'Could not install the Arduino library.')
+      setLibraryBusy('')
+    }
   }
 
   return <Container ref={embedded ? undefined : dialog} className={`project-details${embedded ? ' pd-embedded' : ''}`} aria-labelledby={titleId} onCancel={event => { event.preventDefault(); onClose() }}>
@@ -135,6 +162,12 @@ export function ProjectDetails({ project, catalog, onClose, initialTab = 'Info',
       {tabs.map(item => <button key={item} type="button" aria-pressed={tab === item} onClick={() => setTab(item)}>{item}</button>)}
     </nav>}
     <section className="pd-body" aria-label={`${tab} project details`}>
+      {tab === 'Libraries' && <section className="pd-library-panel">
+        <div className="pd-section-heading"><div><h3>Firmware libraries</h3><p className="pd-muted">Headers are detected from your sketch. Install missing libraries before compiling.</p></div><button type="button" className="pd-action" onClick={loadLibraries} disabled={libraryBusy !== ''}><Package size={15} />{libraryBusy === 'scan' ? 'Scanning…' : 'Scan sketch'}</button></div>
+        {libraryError && <p className="pd-error" role="alert">{libraryError}</p>}
+        {!libraries.length && <p className="pd-muted">Scan the sketch to detect external Arduino libraries.</p>}
+        {!!libraries.length && <ul className="pd-library-list">{libraries.map(item => <li key={item.header}><div><code>{item.header}</code><span>{item.library || 'No matching Arduino library found'}</span></div>{item.installed ? <strong className="pd-library-installed">Installed{item.version ? ` · ${item.version}` : ''}</strong> : item.library ? <button type="button" className="pd-action" onClick={() => installLibrary(item.library!)} disabled={libraryBusy !== ''}>{libraryBusy === item.library ? 'Installing…' : 'Install'}</button> : <strong className="pd-library-missing">Unavailable</strong>}</li>)}</ul>}
+      </section>}
       {tab === 'Info' && <>
         <h3>Project overview</h3>
         <dl className="pd-facts">
