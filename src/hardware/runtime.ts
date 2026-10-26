@@ -235,7 +235,8 @@ export class HardwareRuntime {
       this.simulator?.stop()
       this.releaseAttachments()
       if (!this.disposed) {
-        onConnection(event.code === 4409 || event.code === 4410 ? 'Owned by another browser' : event.code === 4403 ? 'Runtime authorization failed' : 'Disconnected')
+        onConnection(event.code === 4409 || event.code === 4410 ? 'Owned by another browser' : event.code === 4403 ? 'Runtime authorization failed'
+          : event.code === 1006 ? 'Disconnected (network or proxy)' : `Disconnected (${event.code})`)
         this.publish()
       }
     }

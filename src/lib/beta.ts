@@ -1,11 +1,45 @@
 import { apiUrl } from '@/lib/api'
 
-export function recordBetaEvent(name: string, properties: Record<string, unknown> = {}, projectId?: string) {
+export type BetaEventContext = { runId?: string; chatId?: string }
+
+let cachedSessionId = ''
+
+export function clientSessionId() {
+  if (cachedSessionId) return cachedSessionId
+  try {
+    cachedSessionId = sessionStorage.getItem('wireup.telemetry.session') || ''
+    if (!cachedSessionId) {
+      cachedSessionId = crypto.randomUUID()
+      sessionStorage.setItem('wireup.telemetry.session', cachedSessionId)
+    }
+  } catch {
+    cachedSessionId = crypto.randomUUID()
+  }
+  return cachedSessionId
+}
+
+export function newRunId() {
+  return crypto.randomUUID()
+}
+
+export function recordBetaEvent(
+  name: string,
+  properties: Record<string, unknown> = {},
+  projectId?: string,
+  context: BetaEventContext = {},
+) {
   void fetch(apiUrl('/api/beta/events'), {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, project_id: projectId, properties }),
+    body: JSON.stringify({
+      name,
+      project_id: projectId,
+      run_id: context.runId,
+      session_id: context.chatId,
+      properties: { ...properties, client_session_id: clientSessionId() },
+    }),
+    keepalive: true,
   }).catch(() => {})
 }
 

@@ -1,0 +1,13 @@
+# Copy to ~/.cloudflared/wireup.yml and replace the tunnel UUID.
+# Create it with: cloudflared tunnel create wireup
+# Add DNS with:    cloudflared tunnel route dns wireup wireup.space
+#                  cloudflared tunnel route dns wireup www.wireup.space
+tunnel: <TUNNEL-UUID>
+credentials-file: /home/YOU/.cloudflared/<TUNNEL-UUID>.json
+
+ingress:
+  - hostname: wireup.space
+    service: http://127.0.0.1:8000
+  - hostname: www.wireup.space
+    service: http://127.0.0.1:8000
+  - service: http_status:404

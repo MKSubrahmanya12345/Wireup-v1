@@ -25,9 +25,8 @@ export function PlatformHome() {
     setError('')
     void loadWorkspaceModule().catch(() => {})
     try {
-      recordBetaEvent('project_create_started', { has_prompt: Boolean(description) })
+      recordBetaEvent('project_create_started', { has_prompt: Boolean(description), prompt_length: description.length })
       const project = await hardwareApi.createProject(projectTitle(description))
-      recordBetaEvent('project_created', { board: project.board, has_prompt: Boolean(description) }, project.id)
       navigate(`/project/${project.id}`, { state: { initialPrompt: description } })
     } catch (error) { setError(error instanceof Error ? error.message : 'Could not create your workspace.'); setBusy(false) }
   }

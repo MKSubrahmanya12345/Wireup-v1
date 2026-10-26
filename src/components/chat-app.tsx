@@ -14,7 +14,7 @@ import type { Conversation, Message } from '@/lib/chat'
 import { projectTitle } from '@/lib/project-title'
 import { defaultModels, modelOptionKey, readModelSelection, readSelectedModel } from '@/lib/model-selection'
 import type { ModelOption, ModelProvider } from '@/lib/model-selection'
-import { recordBetaEvent } from '@/lib/beta'
+import { newRunId, recordBetaEvent } from '@/lib/beta'
 import { apiUrl } from '@/lib/api'
 
 export function ChatApp({ projectId, runtimeToken, embedded = false, initialPrompt, setupGuidance }: { projectId?: string; runtimeToken?: string; embedded?: boolean; initialPrompt?: string; setupGuidance?: string } = {}) {
@@ -44,7 +44,7 @@ export function ChatApp({ projectId, runtimeToken, embedded = false, initialProm
     setModelId(option.model)
     try { localStorage.setItem('wireup.model-provider', option.id); localStorage.setItem('wireup.model-id', option.model) } catch { /* Selection remains available for this page. */ }
   }
-  const selectedKeyName = { groq: 'GROQ_API_KEY', nvidia: 'NVIDIA_API_KEY', bedrock: 'BEDROCK_API_KEY', azure: 'AZURE_API_KEY', sarvam: 'SARVAM_API_KEY' }[provider]
+  const selectedKeyName = { groq: 'GROQ_API_KEY', nvidia: 'NVIDIA_API_KEY', bedrock: 'BEDROCK_API_KEY', azure: 'AZURE_API_KEY', sarvam: 'SARVAM_API_KEY', openrouter: 'OPENROUTER_API_KEY' }[provider]
   const [connectionError, setConnectionError] = useState('')
   const [rename, setRename] = useState<{ id: string; value: string } | null>(null)
   const [deleting, setDeleting] = useState<string | null>(null)
@@ -100,7 +100,13 @@ export function ChatApp({ projectId, runtimeToken, embedded = false, initialProm
     const abort = new AbortController()
     controller.current = abort
     setBusy(chat.id)
-    recordBetaEvent('ai_run_started', { provider, model: selectedModel.model }, projectId)
+    const runId = newRunId()
+    const prompt = context.findLast(message => message.role === 'user')?.content || ''
+    recordBetaEvent('chat.message_sent', {
+      provider, model: selectedModel.model,
+      prompt_preview: prompt.slice(0, 300), prompt_length: prompt.length,
+      approval: Boolean(approval), message_count: context.length,
+    }, projectId, { runId, chatId: chat.id })
     const reply: Message = { id: crypto.randomUUID(), role: 'assistant', content: '', status: 'streaming', blocks: [], startedAt: Date.now() }
     setChats(previous => {
       const updated = { ...chat, messages: [...context, reply], updatedAt: Date.now(), requirements: answers, projectId }
@@ -143,7 +149,7 @@ export function ChatApp({ projectId, runtimeToken, embedded = false, initialProm
         } else if (event.type === 'notice') {
           setWarning(event.message || '')
         }
-      }, { projectId, runtimeToken, answers, provider, model: selectedModel.model, approval })
+      }, { projectId, runtimeToken, answers, provider, model: selectedModel.model, approval, runId, chatId: chat.id })
       updateMessage(chat.id, reply.id, message => ({ ...message, status: message.error ? 'error' : message.run?.status === 'cancelled' ? 'stopped' : 'done', blocks: message.blocks?.map(block => block.type === 'step' && block.status === 'running' ? { ...block, status: 'stopped', output: 'The run ended without a completion event for this tool.' } : block) }))
     } catch (error) {
       updateMessage(chat.id, reply.id, message => ({
@@ -183,7 +189,7 @@ export function ChatApp({ projectId, runtimeToken, embedded = false, initialProm
       if (!chats.some(chat => chat.messages.some(message => message.role === 'user' && message.content === initialPrompt.trim()))) send(initialPrompt)
       else setDraft('')
     }
-  })
+  }, [embedded, projectId, initialPrompt])
 
   const confirmRequirements = (answers: Record<string, string>) => {
     if (!active || busy) return

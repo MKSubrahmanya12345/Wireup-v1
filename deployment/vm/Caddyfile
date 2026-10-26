@@ -1,0 +1,36 @@
+# WireUp ingress. Everything goes to the backend, which serves both /api and the
+# built SPA, so there is one origin and no CORS.
+#
+# WIREUP_DOMAIN is supplied by /etc/wireup/caddy.env (installed by bootstrap.sh).
+{
+	admin off
+}
+
+{$WIREUP_DOMAIN} {
+	# Compression is skipped for API traffic so NDJSON streaming and WebSockets
+	# are never held back by an encoder buffer.
+	@static not path /api/* /docs* /redoc* /openapi.json
+	encode @static zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+		-Server
+	}
+
+	reverse_proxy 127.0.0.1:8000 {
+		# Do not buffer streaming responses (AI chat NDJSON).
+		flush_interval -1
+		transport http {
+			dial_timeout 5s
+			response_header_timeout 650s
+		}
+	}
+}
+
+# Keep a single browser origin so beta cookies and API Origin checks stay simple.
+www.{$WIREUP_DOMAIN} {
+	redir https://{$WIREUP_DOMAIN}{uri} permanent
+}

@@ -277,9 +277,11 @@ def test_chat_forwards_project_answers_as_requirements(monkeypatch, answers):
     captured = {}
     model = FakeModel()
 
-    async def stream(model, history, project_id, runtime_token, *, requirements, approval=None):
+    async def stream(model, history, project_id, runtime_token, *, requirements, approval=None,
+                     run_id=None, chat_id=None):
         captured.update(model=model, history=history, project_id=project_id,
-                        runtime_token=runtime_token, requirements=requirements)
+                        runtime_token=runtime_token, requirements=requirements,
+                        run_id=run_id, chat_id=chat_id)
         yield {'type': 'done', 'status': 'success'}
 
     monkeypatch.setattr(backend_module, 'stream_agent', stream)

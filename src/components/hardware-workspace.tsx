@@ -20,6 +20,7 @@ import { BoardFlashDialog } from './ui/board-flash-dialog'
 import { visibleForBuilding } from '../lib/simulation-catalog'
 import { EspNetworkDialog } from './ui/esp-network-dialog'
 import { ConnectionCheck } from './connection-check'
+import { recordBetaEvent } from '../lib/beta'
 
 type WorkspaceTab = 'circuit' | 'agent' | 'parts'
 type DockTab = 'compiler' | 'serial' | 'results' | 'tools'
@@ -251,6 +252,7 @@ export function HardwareWorkspace({ chatSlot, children, onProjectChange, schemat
   const [session, setSession] = useState(0)
   const [layout, setLayout] = useState<WorkspaceLayout>(readLayout)
   const [resizing, setResizing] = useState<'sidebar' | 'agent' | 'dock' | null>(null)
+  const openedProject = useRef<string | null>(null)
   useEffect(() => { try { localStorage.setItem(layoutKey, JSON.stringify(layout)) } catch { /* Layout resets if storage is unavailable. */ } }, [layout])
   const busyRef = useRef(false)
 
@@ -316,6 +318,17 @@ export function HardwareWorkspace({ chatSlot, children, onProjectChange, schemat
   }, [projectId, acceptProject, loadAttempt])
 
   useEffect(() => { onProjectChange?.(project) }, [project, onProjectChange])
+
+  useEffect(() => {
+    if (!project || openedProject.current === project.id) return
+    openedProject.current = project.id
+    recordBetaEvent('project.opened', {
+      board: project.board,
+      components: project.components.length,
+      wires: project.wires.length,
+      firmware_lines: project.firmware.source.split('\n').length,
+    }, project.id)
+  }, [project])
 
   useEffect(() => {
     let active = true
@@ -569,11 +582,14 @@ export function HardwareWorkspace({ chatSlot, children, onProjectChange, schemat
     return order.indexOf(a) - order.indexOf(b)
   })
   const selectedBoard = knownCatalog.find(item => catalogType(item) === project?.board)
+  const runtimeHint = connection === 'Owned by another browser'
+    ? 'Close other tabs using this project, then reconnect.'
+    : 'The backend must forward WebSockets (wss://) for the browser runtime; reconnect once the tunnel does.'
   const runBlocker = !project || project.board === 'unselected' ? 'Select a board before running a simulation.'
     : selectedBoard?.simulation === 'unavailable' ? `Simulation is currently unavailable for ${selectedBoard.name}. You can still build the circuit and write source code. ${selectedBoard.unavailable_reason || ''}`
     : dirty ? 'Save and compile your firmware changes before running.'
     : !artifactIsCurrent(project) ? 'Compile the current firmware for this board before running.'
-    : selectedBoard?.simulation !== 'native' && connection !== 'Connected' ? `Browser runtime: ${connection}. Close other tabs using this project, then reconnect.`
+    : selectedBoard?.simulation !== 'native' && connection !== 'Connected' ? `Browser runtime: ${connection}. ${runtimeHint}`
     : busy ? 'Wait for the current operation to finish.' : ''
   const compileDisabled = !!busy || !!results?.running || !project || project.board === 'unselected' || selectedBoard?.compile === false
   const compileFirmware = () => perform('Compiling firmware', async () => {

@@ -18,6 +18,8 @@ def model_options():
     ]
     if os.getenv('SARVAM_API_KEY', '').strip():
         options.append({'id': 'sarvam', 'label': 'Sarvam AI', 'model': os.getenv('SARVAM_MODEL', 'sarvam-105b'), 'configured': True})
+    if os.getenv('OPENROUTER_API_KEY', '').strip():
+        options.append({'id': 'openrouter', 'label': 'OpenRouter', 'model': os.getenv('OPENROUTER_MODEL', 'openai/gpt-oss-120b:free'), 'configured': True})
     return options
 
 
@@ -52,6 +54,13 @@ def build_model(provider, key, model_name):
                           temperature=0.3, max_retries=0, timeout=60, streaming=True,
                           max_tokens=_max_tokens('SARVAM_MAX_TOKENS'),
                           default_headers={'api-subscription-key': key},
+                          stream_usage=False)
+    if provider == 'openrouter':
+        return ChatOpenAI(model=model_name, api_key=key,
+                          base_url=os.getenv('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1').rstrip('/'),
+                          temperature=0.5, max_retries=0, timeout=60, streaming=True,
+                          max_tokens=_max_tokens('OPENROUTER_MAX_TOKENS'),
+                          default_headers={'HTTP-Referer': 'https://wireup.space', 'X-Title': 'WireUp'},
                           stream_usage=False)
     options = {}
     if model_name in ('openai/gpt-oss-120b', 'openai/gpt-oss-20b'):

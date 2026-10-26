@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { openSample } from '@/lib/open-sample'
+import { apiUrl } from '@/lib/api'
+import { recordBetaEvent } from '@/lib/beta'
 
 type Example = { id: string; title: string; category: string; boards: string[]; language: string; available: boolean; starter?: boolean; simulation_scope: 'ready' | 'partial' | 'blocked'; thumbnail?: string; blockers: unknown[]; dependencies?: unknown; part_scopes?: unknown[] }
 export function ExamplesGallery() {
@@ -20,10 +22,24 @@ export function ExamplesGallery() {
     }).catch(error => setError(error.message)).finally(() => setLoading(false))
   }, [])
   const visible = examples.filter(example => `${example.title} ${example.id} ${example.category} ${example.boards.join(' ')}`.toLowerCase().includes(query.toLowerCase()) && (board === 'all' || example.boards.includes(board)) && (category === 'all' || example.category === category) && (scope === 'all' || example.simulation_scope === scope))
+  useEffect(() => {
+    const text = query.trim()
+    if (!text) return
+    const timer = setTimeout(() => {
+      const matches = examples.filter(example => `${example.title} ${example.id} ${example.category} ${example.boards.join(' ')}`.toLowerCase().includes(text.toLowerCase())).length
+      recordBetaEvent('search.performed', { query: text.slice(0, 200), scope: 'examples_explorer', result_count: matches, total_examples: examples.length })
+    }, 600)
+    return () => clearTimeout(timer)
+  }, [query, examples])
   const open = async (id: string) => {
     if (opening) return
     setOpening(id); setError('')
-    try { const project = await openSample(id); navigate(`/project/${project.id}`, { state: { setupGuidance: project.setup_guidance } }) }
+    const sample = examples.find(example => example.id === id)
+    try {
+      const project = await openSample(id)
+      recordBetaEvent('sample.opened', { sample_id: id, title: sample?.title, category: sample?.category, boards: sample?.boards, simulation_scope: sample?.simulation_scope }, project.id)
+      navigate(`/project/${project.id}`, { state: { setupGuidance: project.setup_guidance } })
+    }
     catch (error) { setError(error instanceof Error ? error.message : 'Could not open example.'); setOpening('') }
   }
   const selectClass = 'max-w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm'
@@ -56,4 +72,3 @@ export function ExamplesGallery() {
     </main>
   </div>
 }
-import { apiUrl } from '@/lib/api'

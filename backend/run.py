@@ -29,9 +29,11 @@ def main():
     logging.getLogger('uvicorn.error').addFilter(RuntimeTokenFilter())
     windows = sys.platform == 'win32'
     # Watchfiles uses a Selector loop on Windows, so reload must remain disabled.
+    # Hosted deployments set WIREUP_RELOAD=0 so the process never restarts mid-compile.
+    reload = not windows and os.getenv('WIREUP_RELOAD', 'true').lower() not in ('0', 'false', 'no')
     uvicorn.run('backend.app:app', host='127.0.0.1', port=int(os.getenv('BACKEND_PORT', '8000')),
-                loop='backend.run:compiler_loop' if windows else 'auto', reload=not windows,
-                reload_dirs=None if windows else ['backend'], access_log=False)
+                loop='backend.run:compiler_loop' if windows else 'auto', reload=reload,
+                reload_dirs=None if not reload else ['backend'], access_log=False)
 
 
 if __name__ == '__main__':

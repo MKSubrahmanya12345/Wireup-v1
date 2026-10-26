@@ -44,6 +44,47 @@ TOOLS = (
     'read_firmware', 'edit_firmware', 'compile_firmware', 'run_simulation',
     'stop_simulation', 'read_simulation_results', 'read_compiler_errors', 'calculator',
 )
+# High-volume read/poll commands are intentionally excluded from product analytics.
+TRACKED_COMMANDS = frozenset({
+    'search_components', 'add_component', 'remove_component', 'modify_component',
+    'connect_wire', 'remove_wire', 'check_connections', 'generate_firmware',
+    'edit_firmware', 'compile_firmware', 'run_simulation', 'stop_simulation',
+    'undo', 'wire_circuit', 'validate_circuit', 'route_breadboard',
+    'inspect_libraries', 'install_library',
+})
+MUTATION_COMMANDS = frozenset({
+    'add_component', 'remove_component', 'modify_component', 'connect_wire',
+    'remove_wire', 'generate_firmware', 'edit_firmware', 'undo',
+    'wire_circuit', 'route_breadboard',
+})
+SENSITIVE_ARG = re.compile(r'token|secret|password|authorization|api[_-]?key|cookie|credential|source|old|new', re.I)
+
+
+def summarize_args(value, depth=0):
+    """Keep analytics useful without copying firmware source or credentials."""
+    if depth > 2:
+        return '[truncated]'
+    if isinstance(value, str):
+        return value[:200]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, dict):
+        return {
+            str(key)[:60]: summarize_args(item, depth + 1)
+            for index, (key, item) in enumerate(value.items())
+            if index < 16 and not SENSITIVE_ARG.search(str(key))
+        }
+    if isinstance(value, (list, tuple, set)):
+        items = list(value)
+        return [summarize_args(item, depth + 1) for item in items[:8]]
+    return str(value)[:200]
+
+
+def event_error(error):
+    detail = getattr(error, 'detail', None) or str(error)
+    if isinstance(detail, (dict, list)):
+        detail = json.dumps(detail, ensure_ascii=False, default=str)
+    return str(detail)[:500]
 BOARDS = [
     {'id': 'arduino-uno', 'name': 'Arduino Uno', 'fqbn': 'arduino:avr:uno',
      'compile': True, 'simulation': 'browser', 'format': 'hex', 'runtime': 'avr8js', 'tagName': 'wokwi-arduino-uno'},
@@ -878,7 +919,8 @@ class HardwareService:
                    'runtime_token': secrets.token_urlsafe(32), 'created_at': now(), 'updated_at': now()}
         with self.lock:
             self._save(project)
-        beta.record_event('project_created', project_id=project['id'], properties={'board': board})
+        beta.record_event('project.created', project_id=project['id'],
+                          properties={'board': board, 'name': project['name']})
         return public(project)
 
     def get_project(self, project_id):
@@ -905,7 +947,8 @@ class HardwareService:
             if project_id in self.runtime.sessions:
                 fail(409, 'This project is open in a hardware workspace. Close its workspace before deleting it.')
             self._path(project_id).unlink()
-            beta.record_event('project_deleted', project_id=project_id)
+            beta.record_event('project.deleted', project_id=project_id,
+                              properties={'board': project.get('board'), 'name': project.get('name')})
             return {'deleted': project['id']}
 
     def authorize_runtime(self, project, token):
@@ -1121,6 +1164,75 @@ class HardwareService:
             return copy.deepcopy(artifact)
 
     async def command(self, project_id, name, args=None, runtime_token=None):
+        """Run one hardware command and capture product analytics around it."""
+        started = time.perf_counter()
+        success = True
+        failure = None
+        result = None
+        try:
+            result = await self._command(project_id, name, args, runtime_token)
+            return result
+        except Exception as error:
+            success = False
+            failure = event_error(error)
+            raise
+        finally:
+            if name in TRACKED_COMMANDS:
+                try:
+                    board = self._load(project_id).get('board')
+                except Exception:
+                    board = None
+                self._record_command(project_id, name, args or {}, result, success, failure, board,
+                                     round((time.perf_counter() - started) * 1000))
+
+    def _record_command(self, project_id, name, args, result, success, failure, board, duration_ms):
+        properties = {'command': name, 'success': success, 'duration_ms': duration_ms, 'board': board}
+        data = result if isinstance(result, dict) else {}
+        if failure:
+            properties['error'] = failure
+        if name == 'search_components':
+            properties.update({
+                'query': str(args.get('query') or '')[:200],
+                'scope': 'catalog',
+                'result_count': len(data.get('components') or []),
+                'limit': args.get('limit'),
+            })
+            beta.record_event('search.performed', project_id=project_id, properties=properties, forward=False)
+            return
+        if name == 'compile_firmware':
+            status = data.get('status') or ('error' if not success else 'unknown')
+            errors = data.get('errors') if isinstance(data.get('errors'), list) else []
+            properties.update({
+                'status': status,
+                'success': success and status != 'error',
+                'error_count': len(errors),
+                'error_preview': [str(item)[:300] for item in errors[:3]],
+                'artifact': bool(data.get('artifact')),
+                'stale': bool(data.get('stale')),
+            })
+            beta.record_event('compile.completed', project_id=project_id, properties=properties, forward=False)
+            return
+        if name in ('run_simulation', 'stop_simulation'):
+            runtime = data.get('runtime')
+            nested = data.get('result')
+            if not runtime and isinstance(nested, dict):
+                runtime = nested.get('runtime')
+            properties.update({'runtime': runtime, 'run_id': data.get('run_id') or args.get('run_id')})
+            beta.record_event('simulation.started' if name == 'run_simulation' else 'simulation.stopped',
+                              project_id=project_id, properties=properties, forward=False)
+            return
+        if name in MUTATION_COMMANDS:
+            revision = data.get('revision') or data.get('project', {}).get('revision')
+            summary = summarize_args(data if name in ('edit_firmware', 'generate_firmware') else args)
+            if name in ('edit_firmware', 'generate_firmware'):
+                source = data.get('firmware', {}).get('source') or args.get('source') or ''
+                summary = {'firmware_lines': len(str(source).splitlines())}
+            properties.update({'revision': revision, 'summary': summary})
+            event = 'project.changed' if success else 'project.change_failed'
+            beta.record_event(event, project_id=project_id, properties=properties, forward=False)
+        beta.record_event('command.completed', project_id=project_id, properties=properties, forward=False)
+
+    async def _command(self, project_id, name, args=None, runtime_token=None):
         args = {} if args is None else args
         if not isinstance(args, dict):
             fail(400, 'Command args must be an object.')
@@ -1314,6 +1426,11 @@ def create_router(hardware_service):
             fail(403, 'Hardware API is local-only; loopback client, Host, and Origin are required.')
         response.headers['Cache-Control'] = 'no-store'
         response.headers['Referrer-Policy'] = 'no-referrer'
+        token = beta.CURRENT_SOURCE.set('web')
+        try:
+            yield
+        finally:
+            beta.CURRENT_SOURCE.reset(token)
     api = APIRouter(prefix='/api/hardware', tags=['hardware'], dependencies=[Depends(local_only)])
 
     @api.post('/projects')

@@ -3,6 +3,7 @@ from contextlib import aclosing, asynccontextmanager
 import hashlib
 import json
 import os
+import secrets
 import time
 from pathlib import Path
 from threading import Lock
@@ -10,7 +11,7 @@ from typing import Literal
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, Field, model_validator, field_validator
@@ -21,6 +22,7 @@ from backend.plain_chat import stream_plain_chat
 from backend.hardware import router as hardware_router, local_connection
 from backend.sample_projects import router as sample_router
 from backend.security import SecurityMiddleware
+from backend import admin
 from backend import beta
 from backend import monitoring
 
@@ -49,9 +51,11 @@ class ChatRequest(BaseModel):
     messages: list[ChatMessage] = Field(min_length=1, max_length=200)
     project_id: str | None = Field(default=None, max_length=128)
     runtime_token: str | None = Field(default=None, max_length=128)
+    run_id: str | None = Field(default=None, max_length=128)
+    chat_id: str | None = Field(default=None, max_length=128)
     project_answers: dict[str, str] | None = None
     approval: FeasibilityApproval | None = None
-    provider: Literal['groq', 'nvidia', 'bedrock', 'azure', 'sarvam'] = 'groq'
+    provider: Literal['groq', 'nvidia', 'bedrock', 'azure', 'sarvam', 'openrouter'] = 'groq'
     model: str | None = Field(default=None, min_length=1, max_length=256, pattern=r'^[^\s\x00-\x1f]+$')
 
     @field_validator('project_answers')
@@ -141,6 +145,7 @@ def create_app(model_factory=None, api_key=None):
     application.include_router(hardware_router)
     application.include_router(sample_router)
     application.include_router(beta.router)
+    application.include_router(admin.router)
     application.include_router(monitoring.router)
 
     @application.middleware('http')
@@ -163,9 +168,14 @@ def create_app(model_factory=None, api_key=None):
             return response
         if beta.enabled() and request.url.path.startswith('/api/') and not (
             request.url.path in ('/api/health', '/api/beta/session', '/api/beta/request-access',
-                                 '/api/beta/dev-login') or request.url.path.startswith('/api/beta/invite')
+                                 '/api/beta/dev-login', '/api/beta/verify', '/api/beta/login', '/api/beta/logout')
+            or request.url.path.startswith('/api/beta/invite')
         ):
-            beta.identify(request)
+            try:
+                beta.identify(request)
+            except HTTPException as error:
+                return JSONResponse({'detail': error.detail}, status_code=error.status_code,
+                                    headers={'Cache-Control': 'no-store'})
         try:
             response = await call_next(request)
             return response
@@ -190,21 +200,34 @@ def create_app(model_factory=None, api_key=None):
         if not local_connection(request):
             raise HTTPException(403, 'The local hardware agent is restricted to loopback clients.')
         reload_settings()
-        beta.record_event('ai_run_started', project_id=payload.project_id,
-                          properties={'provider': payload.provider, 'model': payload.model})
         provider = payload.provider
-        key_name = {'azure': 'AZURE_API_KEY', 'nvidia': 'NVIDIA_API_KEY', 'bedrock': 'BEDROCK_API_KEY', 'groq': 'GROQ_API_KEY', 'sarvam': 'SARVAM_API_KEY'}[provider]
+        run_id = payload.run_id or secrets.token_urlsafe(12)
+        actor_id, actor_workspace = beta.user_id(), beta.workspace_id()
+        prompt = payload.messages[-1].content
+        key_name = {'azure': 'AZURE_API_KEY', 'nvidia': 'NVIDIA_API_KEY', 'bedrock': 'BEDROCK_API_KEY', 'groq': 'GROQ_API_KEY', 'sarvam': 'SARVAM_API_KEY', 'openrouter': 'OPENROUTER_API_KEY'}[provider]
         key = api_key if api_key is not None else os.getenv(key_name, '')
-        if not key.strip() and not (provider == 'bedrock' and bedrock_configured()):
-            raise HTTPException(503, f'Add {key_name} to .env, then retry to enable {provider.upper()} replies.')
         model_name = (
             os.getenv('AZURE_MODEL_ID', 'gpt-6.1-sol') if provider == 'azure'
             else os.getenv('BEDROCK_MODEL_ID', 'moonshotai.kimi-k2.5') if provider == 'bedrock'
             else os.getenv('NVIDIA_MODEL', 'z-ai/glm-5.3') if provider == 'nvidia'
             else os.getenv('SARVAM_MODEL', 'sarvam-105b') if provider == 'sarvam'
+            else os.getenv('OPENROUTER_MODEL', 'openai/gpt-oss-120b:free') if provider == 'openrouter'
             else os.getenv('GROQ_MODEL', 'openai/gpt-oss-120b')
         )
         model_name = payload.model or model_name
+        if not key.strip() and not (provider == 'bedrock' and bedrock_configured()):
+            beta.record_event('ai.run_failed', project_id=payload.project_id, session_id=payload.chat_id,
+                              run_id=run_id, source='server', forward=False,
+                              user_id_override=actor_id, workspace_id_override=actor_workspace,
+                              properties={'provider': provider, 'model': model_name,
+                                          'status': 'error', 'reason': 'missing_key',
+                                          'prompt_preview': prompt[:500], 'prompt_length': len(prompt)})
+            raise HTTPException(503, f'Add {key_name} to .env, then retry to enable {provider.upper()} replies.')
+        beta.record_event('ai.run_started', project_id=payload.project_id, session_id=payload.chat_id,
+                          run_id=run_id, source='server', forward=False,
+                          user_id_override=actor_id, workspace_id_override=actor_workspace,
+                          properties={'provider': provider, 'model': model_name, 'chat_id': payload.chat_id,
+                                      'prompt_preview': prompt[:500], 'prompt_length': len(prompt)})
         selected = []
         count = 0
         for message in reversed(payload.messages):
@@ -226,58 +249,117 @@ def create_app(model_factory=None, api_key=None):
 
         async def generate():
             started = time.monotonic()
+            recorded = False
+
+            def finish(status, reason=None, final=None):
+                nonlocal recorded
+                if recorded:
+                    return
+                recorded = True
+                properties = {
+                    'provider': provider, 'model': model_name, 'status': status, 'reason': reason,
+                    'duration_ms': int((time.monotonic() - started) * 1000),
+                    'prompt_preview': prompt[:500], 'prompt_length': len(prompt),
+                }
+                if final:
+                    properties['duration_ms'] = int(final.get('elapsedMs') or properties['duration_ms'])
+                    properties['tool_calls'] = int(final.get('toolCalls') or 0)
+                    properties['model_calls'] = int(final.get('modelCalls') or 0)
+                    properties['changes'] = final.get('changes') or {}
+                    if final.get('usage'):
+                        properties['usage'] = final['usage']
+                beta.record_event('ai.run_failed' if status == 'error' else 'ai.run_completed',
+                                  project_id=payload.project_id, session_id=payload.chat_id,
+                                  run_id=run_id, source='server', forward=False,
+                                  user_id_override=actor_id, workspace_id_override=actor_workspace,
+                                  properties=properties)
+
             yield event('heartbeat')
             try:
-                async with asyncio.timeout(20):
-                    model = await asyncio.to_thread(application.state.model_factory) if application.state.model_factory else await asyncio.to_thread(cached_model, provider, key, model_name, asyncio.get_running_loop())
-            except Exception:
-                monitoring.capture('ai_run_failed', {'provider': provider, 'model': model_name,
-                                                     'duration_ms': int((time.monotonic() - started) * 1000)},
-                                   distinct_id=beta.user_id())
-                yield event('text', channel='narration', text=f'{provider.upper()} model initialization failed or timed out. Check its API settings and retry.')
-                yield event('done', status='error')
-                return
-            if len(selected) < len(payload.messages):
-                yield event('text', channel='narration', text='Older messages were omitted from model context.\n')
-            plain = not payload.project_id and not any(word in payload.messages[-1].content.lower() for word in ('calculate', 'calculator', 'compute')) and application.state.model_factory is None
-            stream = stream_plain_chat(model, history, timeout_seconds=300 if provider == 'bedrock' else 30) if plain else stream_agent(model, history, payload.project_id, payload.runtime_token, requirements=payload.project_answers, approval=payload.approval.model_dump() if payload.approval else None)
-            async with aclosing(stream) as agent:
-                pending = asyncio.create_task(anext(agent, None))
                 try:
-                    while True:
-                        finished, _ = await asyncio.wait({pending}, timeout=10)
-                        if not finished:
-                            if await request.is_disconnected():
+                    async with asyncio.timeout(20):
+                        model = await asyncio.to_thread(application.state.model_factory) if application.state.model_factory else await asyncio.to_thread(cached_model, provider, key, model_name, asyncio.get_running_loop())
+                except Exception:
+                    finish('error', 'model_initialization_failed')
+                    monitoring.capture('ai_run_failed', {'provider': provider, 'model': model_name,
+                                                         'duration_ms': int((time.monotonic() - started) * 1000)},
+                                       distinct_id=actor_id)
+                    yield event('text', channel='narration', text=f'{provider.upper()} model initialization failed or timed out. Check its API settings and retry.')
+                    yield event('done', status='error')
+                    return
+                if len(selected) < len(payload.messages):
+                    yield event('text', channel='narration', text='Older messages were omitted from model context.\n')
+                plain = not payload.project_id and not any(word in payload.messages[-1].content.lower() for word in ('calculate', 'calculator', 'compute')) and application.state.model_factory is None
+                stream = stream_plain_chat(model, history, timeout_seconds=300 if provider == 'bedrock' else 30) if plain else stream_agent(model, history, payload.project_id, payload.runtime_token, requirements=payload.project_answers, approval=payload.approval.model_dump() if payload.approval else None, run_id=run_id, chat_id=payload.chat_id)
+                async with aclosing(stream) as agent:
+                    pending = asyncio.create_task(anext(agent, None))
+                    try:
+                        while True:
+                            done, _ = await asyncio.wait({pending}, timeout=10)
+                            if not done:
+                                if await request.is_disconnected():
+                                    finish('cancelled', 'client_disconnected')
+                                    return
+                                yield event('heartbeat')
+                                continue
+                            item = pending.result()
+                            if item is None:
+                                finish('cancelled', 'client_disconnected')
                                 return
-                            yield event('heartbeat')
-                            continue
-                        item = pending.result()
-                        if item is None:
-                            return
-                        if await request.is_disconnected():
-                            return
-                        if provider in ('nvidia', 'azure') and item.get('type') == 'text' and item.get('channel') == 'narration':
-                            text = item.get('text', '').replace('Groq', 'NVIDIA' if provider == 'nvidia' else 'Azure')
-                            if provider == 'nvidia' and 'model could not complete' in text.lower():
-                                text = 'NVIDIA could not complete this request. Check your key and model access in the NVIDIA API catalog.'
-                            item = {**item, 'text': text}
-                        yield json.dumps(item, ensure_ascii=False) + '\n'
-                        if item.get('type') == 'done':
-                            monitoring.capture('ai_run_completed', {
-                                'provider': provider, 'model': model_name,
-                                'duration_ms': int((time.monotonic() - started) * 1000),
-                                'status': item.get('status', 'success'),
-                            }, distinct_id=beta.user_id())
-                            return
-                        pending = asyncio.create_task(anext(agent, None))
-                finally:
-                    if not pending.done():
-                        pending.cancel()
-                        await asyncio.gather(pending, return_exceptions=True)
+                            if await request.is_disconnected():
+                                finish('cancelled', 'client_disconnected')
+                                return
+                            if provider in ('nvidia', 'azure') and item.get('type') == 'text' and item.get('channel') == 'narration':
+                                text = item.get('text', '').replace('Groq', 'NVIDIA' if provider == 'nvidia' else 'Azure')
+                                if provider == 'nvidia' and 'model could not complete' in text.lower():
+                                    text = 'NVIDIA could not complete this request. Check your key and model access in the NVIDIA API catalog.'
+                                item = {**item, 'text': text}
+                            yield json.dumps(item, ensure_ascii=False) + '\n'
+                            if item.get('type') == 'done':
+                                finish(item.get('status') or 'success', item.get('reason'), item)
+                                monitoring.capture('ai_run_completed', {
+                                    'provider': provider, 'model': model_name,
+                                    'duration_ms': int((time.monotonic() - started) * 1000),
+                                    'status': item.get('status', 'success'),
+                                }, distinct_id=actor_id)
+                                return
+                            pending = asyncio.create_task(anext(agent, None))
+                    finally:
+                        if not pending.done():
+                            pending.cancel()
+                            await asyncio.gather(pending, return_exceptions=True)
+            except asyncio.CancelledError:
+                finish('cancelled', 'client_disconnected')
+                raise
+            except Exception:
+                finish('error', 'stream_error')
+                raise
+            finally:
+                finish('cancelled', 'client_disconnected')
 
         return StreamingResponse(generate(), media_type='application/x-ndjson', headers={'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no', 'X-Content-Type-Options': 'nosniff'})
 
+    mount_static_app(application)
     return application
+
+
+def mount_static_app(application):
+    """Serve the built SPA from the same origin as the API when dist/ exists."""
+    dist = Path(__file__).resolve().parents[1] / 'dist'
+    index = (dist / 'index.html').resolve()
+    if not index.is_file():
+        return
+    root = dist.resolve()
+
+    @application.get('/{path:path}', include_in_schema=False)
+    async def spa(path: str):
+        if path.startswith('api/') or path == 'openapi.json' or path.startswith(('docs', 'redoc')):
+            raise HTTPException(404, 'Not found.')
+        target = (root / path).resolve() if path else index
+        if path and target.is_file() and target.is_relative_to(root):
+            cache = 'public, max-age=31536000, immutable' if path.startswith('assets/') else 'public, max-age=3600'
+            return FileResponse(target, headers={'Cache-Control': cache})
+        return FileResponse(index, headers={'Cache-Control': 'no-store'})
 
 
 app = create_app()

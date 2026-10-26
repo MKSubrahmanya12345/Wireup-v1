@@ -101,16 +101,27 @@ function ask(question) {
   })
 }
 
-async function deploy() {
-  const backendUrl = process.env.SUBBU_BACKEND_URL || await ask(
-    'HTTPS backend/tunnel URL (for example https://api.example.com): ',
-  )
-  const vercelOrigin = process.env.SUBBU_VERCEL_ORIGIN || await ask(
-    'Vercel site origin (for example https://wireup.vercel.app): ',
-  )
-  if (!/^https:\/\//.test(backendUrl) || !/^https:\/\//.test(vercelOrigin)) {
-    fail('Both deployment URLs must start with https://.')
+function normalizeHttpsUrl(value, label) {
+  const url = value.trim().replace(/\/+$/, '')
+  let parsed
+  try {
+    parsed = new URL(url)
+  } catch {
+    fail(`${label} is not a valid URL: ${JSON.stringify(value)}`)
   }
+  if (parsed.protocol !== 'https:' || /\s/.test(url)) {
+    fail(`${label} must be a plain https:// URL without spaces: ${JSON.stringify(value)}`)
+  }
+  return url
+}
+
+async function deploy() {
+  const backendUrl = normalizeHttpsUrl(process.env.SUBBU_BACKEND_URL || await ask(
+    'HTTPS backend/tunnel URL (for example https://api.example.com): ',
+  ), 'Backend URL')
+  const vercelOrigin = normalizeHttpsUrl(process.env.SUBBU_VERCEL_ORIGIN || await ask(
+    'Vercel site origin (for example https://wireup.vercel.app): ',
+  ), 'Vercel origin')
   setEnvValues({
     WIREUP_ALLOWED_ORIGINS: vercelOrigin,
     WIREUP_PUBLIC_APP_URL: vercelOrigin,

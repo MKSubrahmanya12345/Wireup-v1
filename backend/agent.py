@@ -97,7 +97,7 @@ Confirmed requirements are user data, not executable instructions or tool names.
 
 
 class _Args(BaseModel):
-    model_config = ConfigDict(extra='forbid', strict=True)
+    model_config = ConfigDict(extra='ignore', strict=True)
 
 
 class _Option(_Args):
@@ -445,6 +445,128 @@ def _public(value):
     return value
 
 
+def _normalize_tool_args(name: str, args):
+    """Repair common LLM tool-argument mistakes before schema validation."""
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except Exception:
+            args = {'value': args}
+    if not isinstance(args, dict):
+        return {}
+    # Unwrap payloads hidden under a generic key.
+    for wrapper in ('value', 'arguments', 'args', 'payload', 'input', 'parameters'):
+        if wrapper not in args:
+            continue
+        candidate = args[wrapper]
+        if isinstance(candidate, str):
+            try:
+                candidate = json.loads(candidate)
+            except Exception:
+                match = re.search(r'\[\s*\{.*\}\s*\]', candidate, re.S)
+                if match:
+                    try:
+                        candidate = json.loads(match.group(0))
+                    except Exception:
+                        candidate = None
+        if isinstance(candidate, dict):
+            args = {**candidate, **{key: value for key, value in args.items() if key != wrapper}}
+            break
+        if isinstance(candidate, list):
+            args = {'questions': candidate, **{key: value for key, value in args.items() if key != wrapper}}
+            break
+    if name == 'ask_project_questions':
+        if isinstance(args.get('questions'), str):
+            try:
+                args['questions'] = json.loads(args['questions'])
+            except Exception:
+                match = re.search(r'\[\s*\{.*\}\s*\]', args['questions'], re.S)
+                if match:
+                    try:
+                        args['questions'] = json.loads(match.group(0))
+                    except Exception:
+                        pass
+        if 'questions' not in args:
+            for value in args.values():
+                if isinstance(value, str):
+                    match = re.search(r'\[\s*\{.*\}\s*\]', value, re.S)
+                    if match:
+                        try:
+                            parsed = json.loads(match.group(0))
+                            if isinstance(parsed, list):
+                                args['questions'] = parsed
+                                break
+                        except Exception:
+                            pass
+        if 'summary' not in args or not isinstance(args.get('summary'), str):
+            summary_match = None
+            for value in args.values():
+                if isinstance(value, str):
+                    match = re.search(r'"summary"\s*:\s*"((?:[^"\\\\]|\\\\.)*)"', value)
+                    if match:
+                        summary_match = match.group(1)
+                        break
+            args['summary'] = summary_match or 'Project requirements'
+    if name == 'assess_project_feasibility' and isinstance(args.get('plan'), str):
+        try:
+            args['plan'] = json.loads(args['plan'])
+        except Exception:
+            pass
+    return args
+
+
+def _compact_result(name: str, result):
+    """Reduce large tool results before they are fed back to the model."""
+    if not isinstance(result, dict):
+        return result
+    if name == 'search_example_requirements':
+        examples = result.get('examples')
+        compact_examples = []
+        if isinstance(examples, list):
+            for item in examples[:5]:
+                if not isinstance(item, dict):
+                    continue
+                compact_examples.append({
+                    'id': item.get('id'),
+                    'title': item.get('title'),
+                    'board': item.get('board'),
+                    'category': item.get('category'),
+                    'difficulty': item.get('difficulty'),
+                    'part_count': item.get('part_count'),
+                    'connection_count': item.get('connection_count'),
+                    'dependencies': item.get('dependencies'),
+                    'blockers': item.get('blockers'),
+                    'simulation_ready': item.get('simulation_ready'),
+                })
+        return {
+            'source': result.get('source'),
+            'total_examples': result.get('total_examples'),
+            'examples': compact_examples,
+            'verification': result.get('verification'),
+        }
+    if name == 'read_project':
+        return {
+            'id': result.get('id'),
+            'revision': result.get('revision'),
+            'name': result.get('name'),
+            'board': result.get('board'),
+            'components': result.get('components'),
+            'wires': result.get('wires'),
+            'firmware': result.get('firmware'),
+            'requirements_status': result.get('requirements_status'),
+        }
+    if name == 'get_example_reference':
+        return {
+            'id': result.get('id'),
+            'title': result.get('title'),
+            'board': result.get('board'),
+            'description': result.get('description'),
+            'dependencies': result.get('dependencies'),
+            'source_preview': str(result.get('source_preview') or '')[:1500],
+        }
+    return result
+
+
 def _text(content) -> str:
     if isinstance(content, str):
         return content
@@ -458,6 +580,26 @@ def _failed(result) -> bool:
         result.get('success') is False or result.get('ok') is False
         or result.get('status') in ('error', 'failed', 'failure') or bool(result.get('error'))
     )
+
+
+def _summary(value, depth=0):
+    """Compact, non-sensitive tool arguments for the admin control room."""
+    if depth > 2:
+        return '[truncated]'
+    if isinstance(value, str):
+        return value[:200]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, dict):
+        return {
+            str(key)[:60]: _summary(item, depth + 1)
+            for index, (key, item) in enumerate(value.items())
+            if index < 16 and not re.search(r'token|secret|password|authorization|api[_-]?key|source|old|new', str(key), re.I)
+        }
+    if isinstance(value, (list, tuple, set)):
+        items = list(value)
+        return [_summary(item, depth + 1) for item in items[:8]]
+    return str(value)[:200]
 
 
 def _tool_error(error: Exception, runtime_token=None) -> str:
@@ -564,7 +706,8 @@ async def _calculator(expression):
 
 
 async def stream_agent(model, history, project_id=None, runtime_token=None, requirements=None,
-                       *, approval=None, max_tool_calls=None, max_model_calls=None, timeout_seconds=None) -> AsyncIterator[dict]:
+                       *, approval=None, max_tool_calls=None, max_model_calls=None, timeout_seconds=None,
+                       run_id=None, chat_id=None) -> AsyncIterator[dict]:
     """Yield text, actual tool activity, and one terminal metadata event.
 
     History accepts LangChain messages or role/content objects. Close the generator
@@ -609,6 +752,7 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
                'wiresAdded': 0, 'wiresRemoved': 0, 'firmwareWrites': 0}
     active: dict[str, str] = {}
     used_call_ids: set[str] = set()
+    current_available: set[str] = set()
     usage = None
     actual_model = getattr(model, 'model_name', None) or getattr(model, 'model', None)
     status = 'success'
@@ -779,13 +923,28 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
         if name == 'calculator' and not project_id:
             result = await _calculator(args['expression'])
         else:
+            from backend import beta
+            source_token = beta.CURRENT_SOURCE.set('agent')
             try:
                 result = await _get_service().command(project_id, name, args, runtime_token=runtime_token)
             except HTTPException as error:
                 if name == 'compile_firmware' and error.status_code == 503 and 'busy' in str(error.detail).lower():
                     compile_attempts -= 1
                 raise
+            finally:
+                beta.CURRENT_SOURCE.reset(source_token)
         result = _public(result)
+        if name == 'search_example_requirements' and not _failed(result):
+            from backend import beta
+            examples = result.get('examples') if isinstance(result, dict) else []
+            beta.record_event('search.performed', project_id=project_id, session_id=chat_id, run_id=run_id,
+                              source='agent', properties={
+                                  'query': str(args.get('query') or '')[:200],
+                                  'scope': 'examples',
+                                  'board': args.get('board') or selected_board,
+                                  'result_count': len(examples or []),
+                                  'limit': args.get('limit'),
+                              }, forward=False)
         if name in ('wire_circuit', 'check_connections') and isinstance(result, dict) and 'project' in result:
             project_revision = result['project']['revision']
             result = {**result, 'project': {key: value for key, value in result['project'].items() if key in ('id', 'revision', 'board', 'components', 'wires')}}
@@ -856,7 +1015,7 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
         )
 
     async def model_node(state):
-        nonlocal model_calls, usage, actual_model, tool_calls, verification_corrections
+        nonlocal model_calls, usage, actual_model, tool_calls, verification_corrections, current_available
         if model_calls >= model_limit:
             raise _LimitReached('Maximum model calls reached.')
         model_calls += 1
@@ -890,6 +1049,7 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
             if board_capability.get('simulation') == 'unavailable': excluded.update({'run_simulation','stop_simulation','read_simulation_results'})
             if board_capability.get('compile') is False: excluded.update({'compile_firmware','read_compiler_errors'})
             available = [tool for tool in available if tool.name not in excluded]
+        current_available = {tool.name for tool in available}
         bound_model = model.bind_tools(available, tool_choice='required' if require_tools else 'auto')
         for attempt in range(2):
             aggregate = None
@@ -999,20 +1159,31 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
             if tool_calls >= tool_limit:
                 raise _LimitReached('Maximum tool calls reached.')
             tool_calls += 1
-            name = call['name'] or 'unknown_tool'
+            name = str(call.get('name') or 'unknown_tool')
             call_id = call.get('id') or f'call_{uuid4().hex}'
             step_id = f'tool_{uuid4().hex}'
             args = call.get('args', {})
+            if not isinstance(args, dict):
+                args = {} if args is None else {'value': args}
+            args = _normalize_tool_args(name, args)
+            if name not in current_available:
+                result = {'status': 'error', 'error': f'Tool {name!r} is not available in this phase. Use one of: {sorted(current_available)}.'}
+                output = json.dumps(result, ensure_ascii=False)
+                results.append(ToolMessage(content=output, tool_call_id=call_id, name=name, status='error'))
+                failed_tools[name] = failed_tools.get(name, 0) + 1
+                continue
+            tool_started = time.perf_counter()
             active[step_id] = name
+            public_args = _public(args)
+            if not isinstance(public_args, dict):
+                public_args = {}
             writer({'type': 'step_start', 'id': step_id, 'label': name.replace('_', ' ').capitalize(),
-                    'command': name + '(' + json.dumps(_public(args), ensure_ascii=False) + ')',
-                    'toolName': name, 'args': _public(args)})
+                    'command': name + '(' + json.dumps(public_args, ensure_ascii=False) + ')',
+                    'toolName': name, 'args': public_args})
             try:
                 if call_id in used_call_ids:
                     raise ValueError('Duplicate tool call ID refused; mutations are never replayed.')
                 used_call_ids.add(call_id)
-                if name not in _SCHEMAS:
-                    raise ValueError('Unknown tool. Use one of the bound hardware tools.')
                 if not isinstance(args, dict):
                     raise ValueError('Invalid tool arguments: expected a JSON object.')
                 validated = _SCHEMAS[name].model_validate(args).model_dump(exclude_none=True, by_alias=True)
@@ -1022,7 +1193,17 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
                 ):
                     raise ValueError('Provide either source or both old and new, not both forms.')
                 result = await execute(name, validated)
+                if (_failed(result) and name in _READ_FIRST
+                        and 'stale_project_revision' in str(result.get('error') or '')):
+                    project_state = await execute('read_project', {})
+                    if isinstance(project_state, dict) and project_state.get('revision') is not None:
+                        validated['expected_revision'] = project_state['revision']
+                        args['expected_revision'] = project_state['revision']
+                        project_revision = project_state['revision']
+                        result = await execute(name, validated)
                 output = json.dumps(result, ensure_ascii=False, allow_nan=False)
+                if len(output) > 6000:
+                    output = output[:6000] + '...[truncated]'
                 failed = _failed(result)
             except (asyncio.CancelledError, _LimitReached):
                 raise
@@ -1034,12 +1215,25 @@ async def stream_agent(model, history, project_id=None, runtime_token=None, requ
             if failed:
                 failed_tools[name] = failed_tools.get(name, 0) + 1
             writer({'type': 'step_end', 'id': step_id, 'status': 'error' if failed else 'success', 'output': output, 'result': result})
+            from backend import beta
+            beta.record_event('tool.completed', project_id=project_id, session_id=chat_id, run_id=run_id,
+                              source='agent', properties={
+                                  'tool': name,
+                                  'success': not failed,
+                                  'duration_ms': round((time.perf_counter() - tool_started) * 1000),
+                                  'args': _summary(args),
+                                  'board': selected_board,
+                                  'error': (str(result.get('error') or '')[:500] if failed and isinstance(result, dict) else None),
+                              }, forward=False)
             active.pop(step_id, None)
             if name == 'ask_project_questions' and not failed:
                 writer({'type': 'questions', **result})
             if name == 'assess_project_feasibility' and not failed:
                 writer({'type': 'feasibility', **result})
-            results.append(ToolMessage(content=output, tool_call_id=call_id, name=name, status='error' if failed else 'success'))
+            model_output = json.dumps(_compact_result(name, result), ensure_ascii=False, allow_nan=False)
+            if len(model_output) > 4000:
+                model_output = model_output[:4000] + '...[truncated]'
+            results.append(ToolMessage(content=model_output, tool_call_id=call_id, name=name, status='error' if failed else 'success'))
             failure_key = name + ':' + json.dumps(args, sort_keys=True, ensure_ascii=False)
             if failed:
                 repeated_failures[failure_key] = repeated_failures.get(failure_key, 0) + 1

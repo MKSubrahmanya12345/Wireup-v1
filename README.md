@@ -97,16 +97,17 @@ Six home-page starters open independent prewired copies: Serial Hello World, Uno
 
 ## Invite-only beta mode
 
-For the fastest deployment, see
-[Vercel frontend with laptop backend](./docs/LAPTOP_BACKEND_VERCEL.md). The
-backend must remain on a stable HTTPS tunnel because it owns project files,
-compilation, and runtime WebSockets.
+For the always-on deployment, see
+[Cloud VM hosting at wireup.space](./docs/CLOUD_VM_HOSTING.md). One Ubuntu VM
+runs Caddy + uvicorn, serves the built SPA and `/api` from the same origin, and
+needs no laptop, Docker, or external database. The older
+[Vercel frontend with laptop backend](./docs/LAPTOP_BACKEND_VERCEL.md) flow is
+kept as a reference only.
 
 Set `WIREUP_BETA_AUTH_ENABLED=true` to require an invited tester session for API
 access. Beta users receive an isolated workspace and projects are scoped to that
-workspace. The development sign-in form can be enabled locally with
-`WIREUP_BETA_DEV_LOGIN=true`; production should replace `/api/beta/dev-login`
-with a passwordless email provider before enabling it for real testers.
+workspace. `WIREUP_BETA_DEV_LOGIN` must stay `false` for external testers; issue
+one-time links with `python -m backend.beta link <email>` or from `/admin`.
 
 The beta service stores users, invitations, sessions, and structured product
 events in the SQLite file configured by `WIREUP_BETA_DB`. Set

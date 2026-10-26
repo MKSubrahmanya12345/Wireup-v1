@@ -47,7 +47,10 @@ export function isQuestions(value: unknown): value is ProjectQuestions {
 export function isFeasibility(value: unknown): value is FeasibilityReport {
   return isRecord(value) && hasStrings(value, ['id', 'status']) && hasStrings(value, ['project_id', 'summary'], true)
     && (value.revision === undefined || (typeof value.revision === 'number' && Number.isFinite(value.revision)))
-    && Array.isArray(value.issues) && value.issues.every(issue => isRecord(issue) && hasStrings(issue, ['code', 'severity', 'title', 'message', 'reason', 'alternative'], true))
+    && Array.isArray(value.issues) && value.issues.every(issue => isRecord(issue) && hasStrings(issue, ['code', 'title', 'message'], true)
+      && (issue.severity === undefined || issue.severity === null || typeof issue.severity === 'string')
+      && (issue.reason === undefined || issue.reason === null || typeof issue.reason === 'string')
+      && (issue.alternative === undefined || issue.alternative === null || typeof issue.alternative === 'string'))
     && Array.isArray(value.choices) && value.choices.every(isChoice)
 }
 
@@ -100,7 +103,7 @@ export function readChats(key = storageKey): { chats: Conversation[]; warning: s
 export async function streamReply(
   messages: Message[], signal: AbortSignal,
   onEvent: (event: ChatEvent) => void,
-  scope: { projectId?: string; runtimeToken?: string; answers?: Record<string, string>; provider?: ModelProvider; model?: string; approval?: { assessment_id: string; choice: string } } = {},
+  scope: { projectId?: string; runtimeToken?: string; answers?: Record<string, string>; provider?: ModelProvider; model?: string; approval?: { assessment_id: string; choice: string }; runId?: string; chatId?: string } = {},
 ) {
   const requestController = new AbortController()
   const cancel = () => requestController.abort(signal.reason)
@@ -111,7 +114,7 @@ export async function streamReply(
   try {
   const response = await fetch(apiUrl('/api/chat'), {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', signal: requestController.signal,
-    body: JSON.stringify({ provider: scope.provider || 'groq', model: scope.model, project_id: scope.projectId, runtime_token: scope.runtimeToken, project_answers: scope.answers, approval: scope.approval, messages: serializeChatHistory(messages) }),
+    body: JSON.stringify({ provider: scope.provider || 'groq', model: scope.model, project_id: scope.projectId, runtime_token: scope.runtimeToken, project_answers: scope.answers, approval: scope.approval, run_id: scope.runId, chat_id: scope.chatId, messages: serializeChatHistory(messages) }),
   })
   clearTimeout(timer)
   if (!response.ok) {
